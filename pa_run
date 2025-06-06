@@ -1,0 +1,919 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import pathlib
+import signal
+import argparse
+import tempfile
+import subprocess
+
+import dataclasses
+from dataclasses import dataclass
+
+import colors as c
+
+VERBOSE_MODE = False
+SCRIPT_PATH = pathlib.Path(os.path.realpath(__file__)).parent.resolve()
+PA_GRADING_RUNNER = SCRIPT_PATH / "pa_notes.php"
+JSON_RESULTS_DEFAULT = pathlib.Path("/tmp/results.json")
+
+STATUS_PASS = "passed"
+STATUS_FAIL = "failed"
+
+def _status(ok):
+    if ok:
+        return c.OKGREEN + "SUCCESS" + c.ENDC
+    else:
+        return c.FAIL + "FAILED" + c.ENDC
+
+def msg(m, step=None, color=None):
+    c_start = "" if color is None else color
+    c_end = "" if color is None else c.ENDC
+    print("{}{}{}".format(c_start, m, c_end))
+
+
+#
+# TODO
+# - read config.json and run command
+# - copy submission dir to work dir
+# - Need some way to infer that this is the
+#   submission dir and not the project repo dir
+#
+# Options
+# - Add working directory option to PA
+# - Strip off first part of command
+# - Add a .pa-run.json file to include some metadata
+# - Add some metadata as argument
+# - Config spec file, like an ebuild?
+#
+# What would the metadata be?
+#  - target_dir:  where in work directory this should go
+# How to compare results
+#  - What can be compared?
+#    - Log files
+#      - Pro:  always available
+#      - Con:  Too noisy--will differ between runs
+#    - Per-test JSON
+#      - Need to build for each assignment.  Already have:  snake,
+#     caching I/O, ideally want for all assignments anyway
+#    - PA JSON
+#      - Relies on existing PHP scripts, low signal
+#
+#  How about:
+#   - If JSON available at XXXX, use it
+#   - If not, look for PA output
+#   - Otherwise, check return code
+
+
+
+def do_exit(message):
+    print(message)
+    sys.exit(1)
+
+def mkdir(dir_name):
+    pathlib.Path.mkdir(pathlib.Path(dir_name),
+                       exist_ok=True)
+
+
+def _get(d, k, default=None, default_none=False):
+    if k in d:
+        return d[k]
+    else:
+        if (default is not None) or (default_none is True):
+            return default
+        else:
+            raise ValueError(f"{d} not in {d}")
+
+@dataclass(init=False)
+class PaGradeEntry():
+    title: str
+    max: int
+    hidden: bool = False
+    no_total: bool = False
+    max_visible: bool = False
+    is_extra: bool = False
+    concealed: bool = False
+
+    def __init__(self, **kwargs):
+        names = set([f.name for f in dataclasses.fields(self)])
+        for k, v in kwargs.items():
+            if k in names:
+                 self.__setattr__(k, v)
+
+    def to_json(self):
+        d = {k: v for k, v in self.__dict__.items() if v is not False}
+        return d
+
+    @classmethod
+    def from_json(cls, jd):
+        try:
+            ret = PaGradeEntry(**jd)
+            return ret
+        except Exception as e:
+            import pdb; pdb.set_trace()
+            raise e
+
+
+@dataclass(init=False)
+class PaRunner():
+    title: str
+    display_title: str
+    command: str = "/bin/true"
+    visible: bool = False
+    transfer_warnings: bool = False
+    xterm_js: bool = False
+    require: str = None
+    eval: str = None
+
+    def __init__(self, **kwargs):
+        names = set([f.name for f in dataclasses.fields(self)])
+        for k, v in kwargs.items():
+            if k in names:
+                 self.__setattr__(k, v)
+
+    def is_interactive(self):
+        return self.xterm_js
+
+    def to_json(self):
+        return self.__dict__.copy()
+
+    @classmethod
+    def from_json(cls, jd):
+        try:
+            ret = PaRunner(**jd)
+            return ret
+        except Exception as e:
+            import pdb; pdb.set_trace()
+            raise e
+
+
+@dataclass(init=True)
+class PaConfig():
+    key: str
+    psetid: int
+    title: str
+    directory: str
+    runners: dict[str,PaRunner]
+    grades: dict[str,PaGradeEntry]
+
+    def __init__(self, **kwargs):
+        names = set([f.name for f in dataclasses.fields(self)])
+        for k, v in kwargs.items():
+            if k in names:
+                self.__setattr__(k, v)
+
+    @classmethod
+    def from_json_file(cls, config_file):
+        def _decode(jd):
+            if "runners" in jd:
+                orig_runners = jd["runners"]
+                jd["runners"] = {k: PaRunner.from_json(v) for k, v in orig_runners.items()}
+            if "grades" in jd:
+                orig_grades = jd["grades"]
+                jd["grades"] = {k: PaGradeEntry.from_json(v) for k, v in orig_grades.items()}
+
+            return jd
+
+        with open(config_file, "r") as json_fd:
+            _jd = json.load(json_fd, object_hook=_decode)
+            try:
+                ret = cls(**_jd)
+                return ret
+            except Exception as e:
+                import pdb; pdb.set_trace()
+                raise e
+
+
+class PATestEntry():
+    name: str
+    output: str
+    status: str
+    output_format: str
+    visibility: str
+    tags: list[str]
+
+    def __init__(self, name, output="", status="",
+                output_format="text", visibility="visible", tags=None):
+        self.name = name
+        self.output = output
+        self.status = status
+        self.outut_format = output_format
+        self.visibility = visibility
+        if tags is None:
+            self.tags = list()
+        else:
+            self.tags = tags
+
+    def is_passing(self):
+        return self.status == STATUS_PASS
+
+    def has_points(self):
+        return False
+
+    def get_score_str(self):
+        return ""
+
+    def fmt_result(self):
+        return c.color("PASS", c.OKGREEN) if self.is_passing() else c.color("FAIL", c.FAIL)
+
+    def to_json(self):
+        return self.__dict__.copy()
+
+    @classmethod
+    def from_json(cls, d):
+        return PATestEntry(**d)
+
+
+class PAResults():
+    tests: list[PATestEntry]
+    t_dict: dict[str, PATestEntry]
+    execution_time: int
+    t_passed: int
+    t_failed: int
+    t_total: int
+    notes: dict | None
+    grades: dict[str, PaGradeEntry] | None
+    output: str
+    runner_rv: int
+
+    @dataclass
+    class GradeSpec:
+        name: str
+        rubric: PaGradeEntry
+        value: int | str | float
+
+        def fmt_result(self):
+            return "{} / {}".format(self.value, self.rubric.max)
+
+    def __init__(self, execution_time, tests,
+                 grades=None, notes=None,
+                 **kwargs):
+        self.execution_time = execution_time
+        self.tests = tests
+        self.t_dict = {t.name: t for t in tests}
+
+        self.grades = grades
+        self.notes = notes
+        self.output = ""
+        self.runner_rv = 0
+
+        self._set_score_info()
+
+    def has_test(self, t_name):
+        return t_name in self.t_dict
+
+    def get_test(self, t_name) -> PATestEntry:
+        if not self.has_test(t_name):
+            raise ValueError("Result does not have test {}".format(t_name))
+        else:
+            return self.t_dict[t_name]
+
+    def passed_test(self, t_name):
+        test = self.get_test(t_name)
+        return test.is_passing()
+
+    def add_grading_rubric(self, rubric_info: dict[str,PaGradeEntry]):
+        self.grades = rubric_info
+
+    def add_notes(self, notes: dict):
+        self.notes = notes
+
+    def add_notes_file(self, notes_file: pathlib.Path | str):
+        with open(str(notes_file), "r") as fd:
+            jd = json.load(fd)
+            self.add_notes(jd)
+
+    def has_notes(self):
+        return self.notes is not None
+
+    def get_grade_entry(self, name):
+        assert(self.grades is not None)
+        if name not in self.grades:
+            raise ValueError("No grade entry found for {}".format(name))
+        return self.grades[name]
+
+    def get_note(self, name):
+        assert(self.notes is not None)
+        assert("autogrades" in self.notes)
+
+        autogrades = self.notes["autogrades"]
+        if name not in autogrades:
+            raise ValueError("No grade note found for {}".format(name))
+        return autogrades[name]
+
+    def get_graded_items(self):
+        if self.has_notes():
+            assert(self.notes is not None)
+            assert("autogrades" in self.notes)
+            return list(self.notes["autogrades"].keys())
+        else:
+            return list()
+
+    def get_graded_spec(self, name):
+        entry = self.get_grade_entry(name)
+        note = self.get_note(name)
+
+        return self.GradeSpec(name, entry, note)
+
+    def get_graded_notes(self):
+        assert(self.grades is not None)
+        assert(self.notes is not None)
+
+        ret = [self.get_graded_spec(n) for n in self.get_graded_items()]
+        return ret
+
+    def add_run_output(self, output, rv):
+        self.output = output
+        self.runner_rv = rv
+
+    @classmethod
+    def from_empty(cls):
+        return PAResults(0.0, tests=dict())
+
+    @classmethod
+    def from_log(cls, log_file, rv):
+        results = PAResults(0.0, tests=dict())
+        with open(log_file, "r") as log_fd:
+            output = log_fd.read()
+            results.add_run_output(output, rv)
+        return results
+
+    @classmethod
+    def from_json(cls, json_data):
+        _tests = _get(json_data, "tests")
+        _exec_time = _get(json_data, "execution_time", 0)
+        _grades = _get(json_data, "grades", None, default_none=True)
+        grades = {k: PaGradeEntry.from_json(v) for k, v in _grades.items()} \
+            if _grades is not None else None
+        notes = _get(json_data, "notes", None, default_none=True)
+        tests = [PATestEntry.from_json(t) for t in _tests]
+
+        return PAResults(_exec_time,
+                         tests=tests,
+                         grades=grades,
+                         notes=notes)
+
+    @classmethod
+    def from_json_file(cls, json_file):
+        with open(json_file, "r") as fd:
+            json_data = json.load(fd)
+            return cls.from_json(json_data)
+
+    def to_json(self):
+        ret = {
+            "format": "pa",
+            "version": 1.0,
+            "tests": [t.to_json() for t in self.tests],
+        }
+        if self.grades is not None:
+            ret["grades"] = {k: v.to_json() for k, v in self.grades.items()}
+
+        if self.notes is not None:
+            ret["notes"] = self.notes
+
+        return ret
+
+    def write_json(self, out_file):
+        with open(str(out_file), "w") as fd:
+            json.dump(self.to_json(), fd,
+                      indent=2)
+
+    def show_notes(self):
+        if not self.has_notes():
+            return
+
+        msg("\nGrades")
+        for spec in self.get_graded_notes():
+            msg("  {}:  {}".format(spec.name, spec.fmt_result()))
+
+    def show(self, descr_on_fail=True, descr_on_pass=True):
+        total = 0
+        passed = 0
+        failed = 0
+        for test in self.tests:
+            if VERBOSE_MODE:
+                msg("{}: {:10}  {}".format(test.fmt_result(), test.get_score_str(), test.name))
+                show_output = (test.is_passing() and descr_on_pass) or ((not test.is_passing()) and descr_on_fail)
+                if show_output:
+                    _output = test.output
+                    output = _output.replace("\n", "\n\t")
+                    msg(f"\n{output}")
+
+            if test.is_passing():
+                passed += 1
+            else:
+                failed += 1
+
+            total += 1
+
+        msg("\n============ PA_RUN SUMMARY ===========")
+        if len(self.tests) > 0:
+            msg("Tests:  {},  PASS:  {}, FAIL:  {}".format(total, passed, failed))
+        else:
+            msg("No per-test results found")
+
+        self.show_notes()
+
+
+    def _set_score_info(self):
+        total = 0
+        passed = 0
+        failed = 0
+
+        for test in self.tests:
+            if test.is_passing():
+                passed += 1
+            else:
+                failed += 1
+
+            total += 1
+
+        self.t_passed = passed
+        self.t_failed = failed
+        self.t_total = total
+
+
+class RunConfig():
+    grading_dir: pathlib.Path
+    target_dir: pathlib.Path
+    overlay_dir: pathlib.Path
+    expected_dir: pathlib.Path
+    _pa_config: PaConfig
+    use_overlay: bool
+    pset_config: pathlib.Path | None
+    grading_script: pathlib.Path | None
+
+    CONFIG_NAME = ".parunconfig.json"
+
+    def __init__(self,
+                 grading_dir,
+                 target_dir=".",
+                 expected_dir=None,
+                 overlay_dir=None,
+                 use_overlay=True,
+                 pset_config=None,
+                 grading_script=None):
+
+        self.grading_dir = pathlib.Path(grading_dir).resolve()
+        self.target_dir = pathlib.Path(target_dir)
+
+        def _rp(val, default):
+            return pathlib.Path(val).resolve() if val is not None else default
+
+        self.expected_dir = _rp(expected_dir, self.grading_dir / "expected")
+        self.use_overlay = use_overlay
+        self.overlay_dir = _rp(overlay_dir, self.grading_dir / "overlay")
+
+        self.pset_config = pset_config
+
+        if self.pset_config is None:
+            self.pset_config = self.grading_dir / "config.json"
+
+        self._pa_config = PaConfig.from_json_file(self.pset_config)
+
+        self.grading_script = grading_script
+        if self.grading_script is None:
+            _grading_script = self.grading_dir / "grade.php"
+            if _grading_script.exists():
+                self.grading_script = _grading_script
+
+
+    def all_commands(self) -> list[str]:
+        return list(self._pa_config.runners.keys())
+
+    def has_command(self, command: str) -> bool:
+        return command in self.all_commands()
+
+    def get_runner(self, command) -> PaRunner:
+        if not self.has_command(command):
+            raise ValueError(f"No runner named f{command}")
+
+        return self._pa_config.runners[command]
+
+    @classmethod
+    def load_from_file(cls, config_file):
+        with open(config_file, "r") as json_fd:
+            jd = json.load(json_fd)
+            return RunConfig(**jd)
+
+    @classmethod
+    def load_config(cls, start_dir="."):
+        dir_to_check = pathlib.Path(start_dir).resolve()
+        if dir_to_check.is_file():
+            return cls.load_from_file(str(dir_to_check))
+
+        config = None
+        while True:
+            config_path = dir_to_check / cls.CONFIG_NAME
+            if config_path.exists():
+                config = cls.load_from_file(config_path)
+            dir_to_check = dir_to_check.parent
+            if str(dir_to_check) == dir_to_check.root:
+                break
+
+        if config is None:
+            import pdb; pdb.set_trace()
+            raise ValueError("No config found")
+
+        return config
+
+
+def has_cmd(cmd_name):
+    output, rv = do_exec("which {}".format(cmd_name), shell=True, check=False, return_rv=True)
+    return rv == 0
+
+
+def do_exec(cmd, check=True, shell=True, cwd=None, return_rv=False):
+    global VERBOSE_MODE
+
+    if VERBOSE_MODE:
+        msg("Executing:  {}".format(" ".join(cmd) if isinstance(cmd, list) else cmd))
+
+    proc = subprocess.run(" ".join(cmd) if shell and isinstance(cmd, list) else cmd, shell=shell, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd)
+
+    if check and proc.returncode != 0:
+        do_exit(f"Command exited with {proc.returncode}:  {proc.stdout}")
+
+    output = proc.stdout
+    if return_rv:
+        return output, proc.returncode
+    else:
+        return output
+
+def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=None):
+    global VERBOSE_MODE
+
+    if VERBOSE_MODE:
+        msg("Executing:  {}".format(" ".join(cmd) if isinstance(cmd, list) else cmd))
+
+    def _become_tty_fg():
+        os.setpgrp()
+        hdlr = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        tty = os.open("/dev/tty", os.O_RDWR)
+        os.tcsetpgrp(tty, os.getpgrp())
+        signal.signal(signal.SIGTTOU, hdlr)
+
+    if (log_file is None) and (not attach):
+        raise ValueError("Log file must be defined for non-interactive process")
+
+    log_fd = open(str(log_file), "wb") if (not attach) else None
+
+    cmd_to_run = " ".join(cmd) if shell and isinstance(cmd, list) else cmd
+    kwargs = {}
+    if attach:
+        kwargs["preexec_fn"] = _become_tty_fg
+    else:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.STDOUT
+        kwargs["bufsize"] = 128
+
+    proc = subprocess.Popen(cmd_to_run, shell=shell, cwd=cwd,
+                            **kwargs)
+
+    if (not attach):
+        for line in proc.stdout:
+            sys.stdout.buffer.write(line)
+            log_fd.write(line)
+
+    proc.wait()
+    if log_fd is not None:
+        log_fd.close()
+
+    if check and proc.returncode != 0:
+        do_exit(f"Command exited with {proc.returncode}:  {proc.stdout}")
+
+    return proc
+
+
+class RunInstance():
+    config: RunConfig
+    submission_dir: pathlib.Path
+    work_path: pathlib.Path
+    work_tempfile: tempfile.TemporaryDirectory | None = None
+    output_dir: pathlib.Path
+    log_file: pathlib.Path
+    notes_json: pathlib.Path
+    results_json: pathlib.Path
+    runner_json: pathlib.Path
+    expected_results: pathlib.Path | None
+    runner_rv: int
+
+    RV_UNSET = -999
+
+    def __init__(self,
+                 config: RunConfig,
+                 submission_dir: pathlib.Path,
+                 work_dir: pathlib.Path | None=None,
+                 output_dir: pathlib.Path | None=None,
+                 expected_results: pathlib.Path | None = None,
+                 preserve_work_dir=False):
+        self.config = config
+        self.submission_dir = submission_dir
+
+        if work_dir is None:
+            self.work_tempfile = tempfile.TemporaryDirectory(delete=(not preserve_work_dir))
+            self.work_path = pathlib.Path(self.work_tempfile.name)
+        else:
+            self.work_path = pathlib.Path(work_dir)
+
+        if output_dir is not None:
+            self.output_dir = output_dir
+        else:
+            self.output_dir = self.work_path / "output"
+
+        self.expected_results = pathlib.Path(expected_results) if expected_results is not None else None
+
+        self.log_file = self.output_dir / "output.log"
+        self.notes_json = self.output_dir / "pa_notes.json"
+        self.results_json = self.output_dir / "results.json"
+        self.runner_json = JSON_RESULTS_DEFAULT
+
+        self.clear_output_files()
+        self.runner_rv = self.RV_UNSET
+
+    def dir_name(self):
+        return self.submission_dir.resolve().stem
+
+    def cleanup(self):
+        if self.work_tempfile:
+            self.work_tempfile.cleanup()
+
+    def clear_output_files(self):
+        self.notes_json.unlink(missing_ok=True)
+        self.runner_json.unlink(missing_ok=True)
+        self.log_file.unlink(missing_ok=True)
+        self.results_json.unlink(missing_ok=True)
+
+    def _exec(self, cmd, check=True, shell=True):
+        return do_exec(cmd, check=check, shell=shell, cwd=str(self.work_path))
+
+    def get_expected_file(self, command=None):
+        if self.expected_results is not None:
+            assert (self.expected_results.exists())
+            return self.expected_results
+
+        if command is None:
+            raise ValueError("Must specify command to search for expected output")
+
+        target = self.config.expected_dir / self.dir_name() / "{}.json".format(command)
+        return target
+
+    def do_run(self, command):
+        root_work_path = pathlib.Path("repo")
+        pset_path = root_work_path / self.config._pa_config.directory
+        self._exec(f"mkdir -pv {str(pset_path)}")
+        self._exec(f"mkdir -pv {str(self.output_dir)}")
+        self._exec(f"cp -pTRv {self.submission_dir} {str(pset_path)}")
+
+        if self.config.use_overlay:
+            self._exec(f"cp -pTRv {str(self.config.overlay_dir)} {str(root_work_path)}")
+
+        runner = self.config.get_runner(command)
+        if runner.command is None:
+            import pdb; pdb.set_trace()
+            raise ValueError("YO")
+
+        interactive = runner.is_interactive()
+        proc = do_exec_live(runner.command, str(self.log_file), shell=True,
+                            cwd=str(self.work_path), attach=interactive)
+        rv = proc.returncode
+        if rv != 0 or VERBOSE_MODE:
+            msg("Runner exited with status {}".format(rv))
+            msg("Checkoff run '{}':  {}".format(command, _status(rv == 0)))
+
+        self.runner_rv = rv
+        return rv
+
+    def runner_ok(self):
+        assert (self.runner_rv != self.RV_UNSET)
+        return (self.runner_rv == 0) or (self.runner_json.exists())
+
+    def do_notes(self, command):
+        grading_script = self.config.grading_script
+        if grading_script is None:
+            msg("No grading script for this pset, skipping notes pass".format(command),
+                color=c.WARNING)
+            return
+
+        runner = self.config.get_runner(command)
+        if runner.eval is None:
+            msg("No eval target for runner {}, skipping notes pass".format(command),
+                color=c.WARNING)
+            return
+
+        cmd = [
+            "php",
+            str(PA_GRADING_RUNNER),
+            f"-p{str(self.config.pset_config)}",
+            f"-f{str(self.log_file)}",
+            f"-o{str(self.notes_json)}",
+            str(self.config.grading_script),
+            "'{}'".format(runner.eval),
+        ]
+        with tempfile.NamedTemporaryFile() as log_fd:
+            do_exec_live(cmd, log_fd.name, shell=True,
+                         cwd=str(self.work_path), attach=False, check=True)
+        if not self.notes_json.exists():
+            msg("WARNING:  No notes file found at {}".format(str(self.notes_json)),
+                color=c.WARNING)
+
+    def do_process_results(self, command,
+                           show=True,
+                           check=True, check_as_error=True):
+
+        runner_results = self.runner_json
+        if runner_results.exists():
+            results = PAResults.from_json_file(runner_results)
+        elif not self.runner_ok():
+            results = PAResults.from_log(self.log_file, self.runner_rv)
+            if VERBOSE_MODE:
+                msg("Warning:  no per-test results found, creating from log file due to error")
+        else:
+            msg("Warning:  no per-test results found, using log file")
+            assert (self.runner_rv != self.RV_UNSET)
+            results = PAResults.from_empty()
+            results.runner_rv = self.runner_rv
+
+        results.add_grading_rubric(self.config._pa_config.grades)
+
+        if self.notes_json.exists():
+            results.add_notes_file(self.notes_json)
+
+        results.write_json(self.results_json)
+        if VERBOSE_MODE:
+            msg("Wrote results to {}".format(str(self.results_json)))
+
+        # if show:
+        #     results.show()
+
+        # ok = False
+        # expected_file = self.get_expected_file(command)
+        # if save_expected:
+        #     msg("Writing results to expected file {}".format(expected_file),
+        #         color=c.OKCYAN)
+        #     mkdir(expected_file.parent)
+        #     results.write_json(expected_file)
+
+        return results
+
+        # if check:
+        #     if not expected_file.exists():
+        #         msg("No expected file found at {}, cannot compare to baseline.  Use --save-expected to save results"
+        #               .format(str(expected_file)),
+        #               color=c.FAIL)
+        #         ok = False
+        #     else:
+        #         ok = self.do_check_expected(str(self.results_json), str(expected_file))
+        # else:
+        #     ok = True
+
+        # return results, ok
+
+    def run_checkoff(self, command,
+                     save_expected=False):
+        rv = self.do_run(command)
+        self.do_notes(command)
+
+        results = self.do_process_results(command)
+        expected_file = self.get_expected_file(command)
+
+        # Default status:  did the runner succeed?
+        run_ok = self.runner_ok()
+
+        return results, run_ok
+
+    @classmethod
+    def do_check_expected(cls, results_file: str, expected_file: str,
+                          show=True, error_on_fail=True):
+        has_hd = has_cmd("jd")
+        diff_output = None
+        rv = None
+
+        if not has_hd:
+            msg("Command `jd` not found, falling back to comparing via `diff`")
+            diff_cmd = [
+                "diff", "-urN", results_file, expected_file,
+            ]
+
+        else:
+            diff_cmd = [
+                "jd", "--color", "--set", results_file, expected_file,
+            ]
+
+        diff_output, rv = do_exec(diff_cmd, check=False, shell=True, return_rv=True)
+        ok = (rv == 0)
+        if show:
+            if ok:
+                msg("{}:  Results match expected results".format(_status(rv == 0)))
+            else:
+                msg("{}{}{}:  Test results did not match expected results"
+                    .format(c.FAIL if error_on_fail else c.WARNING,
+                            "ERROR" if error_on_fail else "WARNING",
+                            c.ENDC))
+                msg(diff_output)
+                msg("Expected results: {}".format(expected_file))
+                msg("Results this run: {}".format(results_file))
+
+        return ok
+
+CHECK_EXPECTED_NONE = "skip"
+CHECK_EXPECTED_WARN = "warn"
+CHECK_EXPECTED_ERROR = "error"
+CHECK_EXPECTED_CHOIES = [
+    CHECK_EXPECTED_NONE,
+    CHECK_EXPECTED_WARN,
+    CHECK_EXPECTED_ERROR,
+]
+
+def main(input_args):
+    global VERBOSE_MODE
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--run-config", type=str, default=".")
+    parser.add_argument("--no-overlay", action="store_true")
+    parser.add_argument("--work-dir", type=str, default=None)
+    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--no-cleanup", action="store_true", default=False)
+    parser.add_argument("--expected", type=str, default=None)
+    parser.add_argument("--check-expected", type=str,
+                        choices=CHECK_EXPECTED_CHOIES, default=CHECK_EXPECTED_WARN)
+    parser.add_argument("--save-expected", action="store_true", default=False)
+    parser.add_argument("submission_dir", type=str, default=None)
+    parser.add_argument("command", type=str, default="list")
+
+    args = parser.parse_args(input_args)
+    config = RunConfig.load_config(args.run_config)
+
+    if args.verbose:
+        VERBOSE_MODE = True
+
+    if args.no_overlay:
+        config.use_overlay = False
+
+    command = args.command
+    save_expected = args.save_expected
+    available_commands = config.all_commands()
+
+    if command == "list" or command not in available_commands:
+        print("Available commands:\n{}".format("\n".join(["\t{}".format(c) for c in available_commands])))
+        sys.exit(1)
+
+    if args.submission_dir is None:
+        print("Must specify submission dir")
+        sys.exit(1)
+
+    submission_path = pathlib.Path(args.submission_dir).resolve()
+
+    def _setup_dir(d):
+        if d is not None:
+            _d = pathlib.Path(d).resolve()
+            mkdir(_d)
+            return _d
+        else:
+            return None
+
+    work_dir = _setup_dir(args.work_dir)
+    output_dir = _setup_dir(args.output_dir)
+    expected_results = pathlib.Path(args.expected) if args.expected else None
+    expected_status = args.check_expected
+
+    run = RunInstance(config, submission_path,
+                      work_dir=work_dir,
+                      output_dir=output_dir,
+                      expected_results=expected_results,
+                      preserve_work_dir=args.no_cleanup)
+    ok = False
+    try:
+        results, run_ok = run.run_checkoff(command)
+        expected_file = run.get_expected_file(command)
+
+        if save_expected:
+            msg("Writing results to expected file {}".format(expected_file),
+                color=c.OKCYAN)
+            mkdir(expected_file.parent)
+            results.write_json(expected_file)
+
+        if run_ok and expected_status != CHECK_EXPECTED_NONE:
+            if not expected_file.exists():
+                msg("No expected file found at {}, cannot compare to baseline"
+                    "Use --save-expected to save current results as baseline"
+                    .format(str(expected_file)), color=c.FAIL)
+
+            show_expected = run_ok
+            error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
+            expected_ok = run.do_check_expected(str(run.results_json), str(expected_file),
+                                                show=show_expected,
+                                                error_on_fail=error_on_fail)
+            if error_on_fail:
+                ok = ok and expected_ok
+    finally:
+        run.cleanup()
+
+    return 0 if ok else 1
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

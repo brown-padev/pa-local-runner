@@ -3,8 +3,9 @@
 import os
 import sys
 import json
-import pathlib
 import signal
+import shutil
+import pathlib
 import argparse
 import tempfile
 import subprocess
@@ -18,6 +19,7 @@ VERBOSE_MODE = False
 SCRIPT_PATH = pathlib.Path(os.path.realpath(__file__)).parent.resolve()
 PA_GRADING_RUNNER = SCRIPT_PATH / "pa_notes.php"
 JSON_RESULTS_DEFAULT = pathlib.Path("/tmp/results.json")
+DEFAULT_WORK_DIR = pathlib.Path("/tmp/pa_run")
 
 STATUS_PASS = "passed"
 STATUS_FAIL = "failed"
@@ -32,40 +34,6 @@ def msg(m, step=None, color=None):
     c_start = "" if color is None else color
     c_end = "" if color is None else c.ENDC
     print("{}{}{}".format(c_start, m, c_end))
-
-
-#
-# TODO
-# - read config.json and run command
-# - copy submission dir to work dir
-# - Need some way to infer that this is the
-#   submission dir and not the project repo dir
-#
-# Options
-# - Add working directory option to PA
-# - Strip off first part of command
-# - Add a .pa-run.json file to include some metadata
-# - Add some metadata as argument
-# - Config spec file, like an ebuild?
-#
-# What would the metadata be?
-#  - target_dir:  where in work directory this should go
-# How to compare results
-#  - What can be compared?
-#    - Log files
-#      - Pro:  always available
-#      - Con:  Too noisy--will differ between runs
-#    - Per-test JSON
-#      - Need to build for each assignment.  Already have:  snake,
-#     caching I/O, ideally want for all assignments anyway
-#    - PA JSON
-#      - Relies on existing PHP scripts, low signal
-#
-#  How about:
-#   - If JSON available at XXXX, use it
-#   - If not, look for PA output
-#   - Otherwise, check return code
-
 
 
 def do_exit(message):
@@ -593,6 +561,7 @@ class RunInstance():
     submission_dir: pathlib.Path
     work_path: pathlib.Path
     work_tempfile: tempfile.TemporaryDirectory | None = None
+    preserve_work_dir: bool = False
     output_dir: pathlib.Path
     log_file: pathlib.Path
     notes_json: pathlib.Path
@@ -613,9 +582,11 @@ class RunInstance():
         self.config = config
         self.submission_dir = submission_dir
 
+        self.preserve_work_dir = preserve_work_dir
         if work_dir is None:
-            self.work_tempfile = tempfile.TemporaryDirectory(delete=(not preserve_work_dir))
-            self.work_path = pathlib.Path(self.work_tempfile.name)
+            #self.work_tempfile = tempfile.TemporaryDirectory(delete=(not preserve_work_dir))
+            #self.work_path = pathlib.Path(self.work_tempfile.name)
+            self.work_path = DEFAULT_WORK_DIR
         else:
             self.work_path = pathlib.Path(work_dir)
 
@@ -631,6 +602,7 @@ class RunInstance():
         self.results_json = self.output_dir / "results.json"
         self.runner_json = JSON_RESULTS_DEFAULT
 
+        mkdir(str(self.work_path))
         self.clear_output_files()
         self.runner_rv = self.RV_UNSET
 
@@ -638,8 +610,9 @@ class RunInstance():
         return self.submission_dir.resolve().stem
 
     def cleanup(self):
-        if self.work_tempfile:
-            self.work_tempfile.cleanup()
+        # if self.work_tempfile and (not self.preserve_work_dir):
+        #     self.work_tempfile.cleanup()
+        pass
 
     def clear_output_files(self):
         self.notes_json.unlink(missing_ok=True)
@@ -684,7 +657,6 @@ class RunInstance():
             msg("Runner exited with status {}".format(rv))
             msg("Checkoff run '{}':  {}".format(command, _status(rv == 0)))
 
-        self.runner_rv = rv
         return rv
 
     def runner_ok(self):
@@ -700,8 +672,8 @@ class RunInstance():
 
         runner = self.config.get_runner(command)
         if runner.eval is None:
-            msg("No eval target for runner {}, skipping notes pass".format(command),
-                color=c.WARNING)
+            msg("No grading function found for {}, skipping notes pass".format(command),
+                color=c.OKBLUE)
             return
 
         cmd = [
@@ -720,9 +692,7 @@ class RunInstance():
             msg("WARNING:  No notes file found at {}".format(str(self.notes_json)),
                 color=c.WARNING)
 
-    def do_process_results(self, command,
-                           show=True,
-                           check=True, check_as_error=True):
+    def do_process_results(self, command):
 
         runner_results = self.runner_json
         if runner_results.exists():
@@ -746,39 +716,15 @@ class RunInstance():
         if VERBOSE_MODE:
             msg("Wrote results to {}".format(str(self.results_json)))
 
-        # if show:
-        #     results.show()
-
-        # ok = False
-        # expected_file = self.get_expected_file(command)
-        # if save_expected:
-        #     msg("Writing results to expected file {}".format(expected_file),
-        #         color=c.OKCYAN)
-        #     mkdir(expected_file.parent)
-        #     results.write_json(expected_file)
-
         return results
 
-        # if check:
-        #     if not expected_file.exists():
-        #         msg("No expected file found at {}, cannot compare to baseline.  Use --save-expected to save results"
-        #               .format(str(expected_file)),
-        #               color=c.FAIL)
-        #         ok = False
-        #     else:
-        #         ok = self.do_check_expected(str(self.results_json), str(expected_file))
-        # else:
-        #     ok = True
-
-        # return results, ok
-
-    def run_checkoff(self, command,
-                     save_expected=False):
+    def run_checkoff(self, command):
         rv = self.do_run(command)
+        self.runner_rv = rv
+
         self.do_notes(command)
 
         results = self.do_process_results(command)
-        expected_file = self.get_expected_file(command)
 
         # Default status:  did the runner succeed?
         run_ok = self.runner_ok()
@@ -886,30 +832,38 @@ def main(input_args):
                       output_dir=output_dir,
                       expected_results=expected_results,
                       preserve_work_dir=args.no_cleanup)
-    ok = False
+    ok = True
     try:
         results, run_ok = run.run_checkoff(command)
         expected_file = run.get_expected_file(command)
 
+        msg("=============== PA_RUN SUMMARY ===================")
         if save_expected:
             msg("Writing results to expected file {}".format(expected_file),
                 color=c.OKCYAN)
             mkdir(expected_file.parent)
             results.write_json(expected_file)
 
+        need_expected = expected_file.exists() and (expected_status != CHECK_EXPECTED_NONE)
+
         if run_ok and expected_status != CHECK_EXPECTED_NONE:
             if not expected_file.exists():
-                msg("No expected file found at {}, cannot compare to baseline"
+                msg("No expected file found at {}, cannot compare to baseline\n"
                     "Use --save-expected to save current results as baseline"
-                    .format(str(expected_file)), color=c.FAIL)
+                    .format(str(expected_file)), color=c.OKBLUE)
+            else:
+                show_expected = run_ok
+                error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
+                expected_ok = run.do_check_expected(str(run.results_json), str(expected_file),
+                                                    show=show_expected,
+                                                    error_on_fail=error_on_fail)
+                if error_on_fail:
+                    ok = ok and expected_ok
 
-            show_expected = run_ok
-            error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
-            expected_ok = run.do_check_expected(str(run.results_json), str(expected_file),
-                                                show=show_expected,
-                                                error_on_fail=error_on_fail)
-            if error_on_fail:
-                ok = ok and expected_ok
+        if not need_expected:
+            msg("{}:  Runner exited with status {}"
+                .format(_status(run_ok), run.runner_rv))
+            ok = ok and run_ok
     finally:
         run.cleanup()
 

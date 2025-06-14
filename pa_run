@@ -30,6 +30,19 @@ def _status(ok):
     else:
         return c.FAIL + "FAILED" + c.ENDC
 
+def _prel(p: str | pathlib.Path):
+    _p = p if isinstance(p, pathlib.Path) else pathlib.Path(p)
+    cwd = pathlib.Path(os.getcwd())
+    if _p.is_relative_to(cwd):
+        return _p.relative_to(cwd)
+    else:
+        return _p
+
+
+def _prels(p: str | pathlib.Path):
+    return str(_prel(p))
+
+
 def msg(m, step=None, color=None):
     c_start = "" if color is None else color
     c_end = "" if color is None else c.ENDC
@@ -122,9 +135,9 @@ class PaConfig():
     key: str
     psetid: int
     title: str
-    directory: str
     runners: dict[str,PaRunner]
     grades: dict[str,PaGradeEntry]
+    directory: str = "."
 
     def __init__(self, **kwargs):
         names = set([f.name for f in dataclasses.fields(self)])
@@ -634,6 +647,10 @@ class RunInstance():
         target = self.config.expected_dir / self.dir_name() / "{}.json".format(command)
         return target
 
+    def get_run_command(self, command):
+        runner = self.config.get_runner(command)
+        return runner.command
+
     def do_run(self, command):
         root_work_path = pathlib.Path("repo")
         pset_path = root_work_path / self.config._pa_config.directory
@@ -643,6 +660,8 @@ class RunInstance():
 
         if self.config.use_overlay:
             self._exec(f"cp -pTRv {str(self.config.overlay_dir)} {str(root_work_path)}")
+            self._exec("touch config.sh")
+            self._exec("touch config.mk")
 
         runner = self.config.get_runner(command)
         if runner.command is None:
@@ -702,7 +721,7 @@ class RunInstance():
             if VERBOSE_MODE:
                 msg("Warning:  no per-test results found, creating from log file due to error")
         else:
-            msg("Warning:  no per-test results found, using log file")
+            msg("Warning:  no per-test results found, can only compare based on exit status")
             assert (self.runner_rv != self.RV_UNSET)
             results = PAResults.from_empty()
             results.runner_rv = self.runner_rv
@@ -732,22 +751,20 @@ class RunInstance():
         return results, run_ok
 
     @classmethod
-    def do_check_expected(cls, results_file: str, expected_file: str,
+    def do_check_expected(cls,
+                          test_results_file: pathlib.Path,
+                          expected_file: pathlib.Path,
                           show=True, error_on_fail=True):
-        has_hd = has_cmd("jd")
         diff_output = None
         rv = None
 
-        if not has_hd:
-            msg("Command `jd` not found, falling back to comparing via `diff`")
-            diff_cmd = [
-                "diff", "-urN", results_file, expected_file,
-            ]
+        if not test_results_file.exists():
+            msg("FAILURE:  Runner did not produce test results file at {}.  Runner may have aborted before it could write results.".format(str(test_results_file)), c.FAIL)
+            return False
 
-        else:
-            diff_cmd = [
-                "jd", "--color", "--set", results_file, expected_file,
-            ]
+        diff_cmd = [
+            "diff", "-urN", str(test_results_file), str(expected_file),
+        ]
 
         diff_output, rv = do_exec(diff_cmd, check=False, shell=True, return_rv=True)
         ok = (rv == 0)
@@ -760,15 +777,15 @@ class RunInstance():
                             "ERROR" if error_on_fail else "WARNING",
                             c.ENDC))
                 msg(diff_output)
-                msg("Expected results: {}".format(expected_file))
-                msg("Results this run: {}".format(results_file))
+                msg("Expected results: {}".format(str(expected_file)))
+                msg("Results this run: {}".format(str(test_results_file)))
 
         return ok
 
 CHECK_EXPECTED_NONE = "skip"
 CHECK_EXPECTED_WARN = "warn"
 CHECK_EXPECTED_ERROR = "error"
-CHECK_EXPECTED_CHOIES = [
+CHECK_EXPECTED_CHOICES = [
     CHECK_EXPECTED_NONE,
     CHECK_EXPECTED_WARN,
     CHECK_EXPECTED_ERROR,
@@ -786,7 +803,7 @@ def main(input_args):
     parser.add_argument("--no-cleanup", action="store_true", default=False)
     parser.add_argument("--expected", type=str, default=None)
     parser.add_argument("--check-expected", type=str,
-                        choices=CHECK_EXPECTED_CHOIES, default=CHECK_EXPECTED_WARN)
+                        choices=CHECK_EXPECTED_CHOICES, default=CHECK_EXPECTED_ERROR)
     parser.add_argument("--save-expected", action="store_true", default=False)
     parser.add_argument("submission_dir", type=str, default=None)
     parser.add_argument("command", type=str, default="list")
@@ -839,31 +856,50 @@ def main(input_args):
 
         msg("=============== PA_RUN SUMMARY ===================")
         if save_expected:
-            msg("Writing results to expected file {}".format(expected_file),
+            msg("Writing results to expected file {}".format(_prels(expected_file)),
                 color=c.OKCYAN)
             mkdir(expected_file.parent)
-            results.write_json(expected_file)
+            print(do_exec(["cp", "-v", str(run.runner_json), str(expected_file)]))
+            #results.write_json(expected_file)
 
-        need_expected = expected_file.exists() and (expected_status != CHECK_EXPECTED_NONE)
+        need_expected = (expected_status != CHECK_EXPECTED_NONE)
+
+        def _print_set_expected():
+            print("If you believe the current test results are accurate, you can set the expected results by copying the test results to the repo at the appropriate path, e.g.:\n"
+                    "\t{}\n"
+                    "\tcp -v {} {}\n"
+                    .format(run.get_run_command(command),
+                            JSON_RESULTS_DEFAULT, _prels(expected_file)))
 
         if run_ok and expected_status != CHECK_EXPECTED_NONE:
             if not expected_file.exists():
-                msg("No expected file found at {}, cannot compare to baseline\n"
-                    "Use --save-expected to save current results as baseline"
-                    .format(str(expected_file)), color=c.OKBLUE)
+                msg("No expected file found at {}, cannot compare to baseline".format(_prels(expected_file)), color=c.WARNING)
+                ok = False
+                msg("{}:  Runner exited with status {}, but no expected results found".format(_status(ok), run.runner_rv))
+                _print_set_expected()
+                #"Use --save-expected to save current results as baseline"
             else:
                 show_expected = run_ok
                 error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
-                expected_ok = run.do_check_expected(str(run.results_json), str(expected_file),
+                expected_ok = run.do_check_expected(run.runner_json, expected_file,
                                                     show=show_expected,
                                                     error_on_fail=error_on_fail)
+                if expected_ok:
+                    print("{}:  Test results match expected results".format(_status(expected_ok)))
+                else:
+                    print("{}:  Test results differ from expected results".format(_status(expected_ok)))
+                    _print_set_expected()
+
                 if error_on_fail:
                     ok = ok and expected_ok
+                else:
+                    print("Expected-results check set in warning-only mode, not returning failure")
 
         if not need_expected:
-            msg("{}:  Runner exited with status {}"
+            msg("{}:  Runner exited with status {}; no expected test results to check"
                 .format(_status(run_ok), run.runner_rv))
             ok = ok and run_ok
+
     finally:
         run.cleanup()
 

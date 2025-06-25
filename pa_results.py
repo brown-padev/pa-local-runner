@@ -10,6 +10,7 @@ import subprocess
 
 import dataclasses
 from dataclasses import dataclass
+from types import NoneType
 
 import colors as c
 
@@ -202,12 +203,18 @@ class PAResults():
 
         self._set_score_info()
 
+    def get_test_names(self):
+        return list(self.t_dict.keys())
+
     def has_test(self, t_name):
         return t_name in self.t_dict
 
-    def get_test(self, t_name) -> PATestEntry:
+    def get_test(self, t_name, missing_ok=False) -> PATestEntry:
         if not self.has_test(t_name):
-            raise ValueError("Result does not have test {}".format(t_name))
+            if missing_ok:
+                return None
+            else:
+                raise ValueError("Result does not have test {}".format(t_name))
         else:
             return self.t_dict[t_name]
 

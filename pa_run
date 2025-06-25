@@ -25,6 +25,7 @@ STATUS_PASS = "passed"
 STATUS_FAIL = "failed"
 
 from pa_results import PaGradeEntry, PaRunner, PaConfig, PATestEntry, PAResults
+from compare import CompareResult
 
 def _status(ok):
     if ok:
@@ -521,7 +522,6 @@ def main(input_args):
 
         expected_file = run.get_expected_file(command)
 
-        msg("\n++++++++++++++++++++++ PA_RUN SUMMARY ++++++++++++++++++++++", color=c.OKCYAN)
         if save_expected:
             msg("Writing results to expected file {}".format(_prels(expected_file)),
                 color=c.OKCYAN)
@@ -529,34 +529,39 @@ def main(input_args):
             print(do_exec(["cp", "-v", str(run.runner_json), str(expected_file)]))
             #results.write_json(expected_file)
 
-        results.show()
-
         need_expected = (expected_status != CHECK_EXPECTED_NONE)
 
         def _print_set_expected():
-            print("If you believe the current test results are accurate, you can set the expected results by copying the test results to the repo at the appropriate path, e.g.:\n"
-                    "\t{}\n"
-                    "\tcp -v {} {}\n"
-                    .format(run.get_run_command(command),
-                            JSON_RESULTS_DEFAULT, _prels(expected_file)))
+            print(c.WARNING + "If you believe the current test results are accurate" + c.ENDC + ", you can set the expected \n"
+                  "results by copying the test results to the repo at the appropriate path, e.g.:\n"
+                   "\t{}\n"
+                   "\tcp -v {} {}\n"
+                   .format(run.get_run_command(command),
+                           JSON_RESULTS_DEFAULT, _prels(expected_file)))
 
+        # def _do_check_expected(run: RunInstance, runner_json, expected_json):
+        #     cr = CompareResult.from_files(runner_json, expected_json)
+
+        cr = None
         if run_ok and expected_status != CHECK_EXPECTED_NONE:
+            print_status("check_expected", "Starting expected results check")
             if not expected_file.exists():
                 msg("No expected file found at {}, cannot compare to baseline".format(_prels(expected_file)), color=c.WARNING)
                 ok = False
                 msg("{}:  Runner exited with status {}, but no expected results found".format(_status(ok), run.runner_rv))
                 _print_set_expected()
+                print_status("check_expected", "Expected results check skipped")
                 #"Use --save-expected to save current results as baseline"
             else:
-                show_expected = run_ok
                 error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
-                expected_ok = run.do_check_expected(run.runner_json, expected_file,
-                                                    show=show_expected,
-                                                    error_on_fail=error_on_fail)
+                cr = CompareResult.from_files(run.runner_json, expected_file)
+                expected_ok = cr.print_summary()
                 if expected_ok:
-                    print("{}:  Test results match expected results".format(_status(expected_ok)))
+                    print_status("check_expected",
+                                 "{}:  results match expected results".format(_status(expected_ok)))
                 else:
-                    print("{}:  Test results differ from expected results".format(_status(expected_ok)))
+                    print_status("check_expected",
+                                 "{}:  results differ from expected results".format(_status(expected_ok)))
                     _print_set_expected()
 
                 if error_on_fail:
@@ -568,6 +573,10 @@ def main(input_args):
             msg("{}:  Runner exited with status {}; no expected test results to check"
                 .format(_status(run_ok), run.runner_rv))
             ok = ok and run_ok
+
+        msg("\n++++++++++++++++++++++ PA_RUN SUMMARY ++++++++++++++++++++++", color=c.OKCYAN)
+        results.show()
+
 
     finally:
         run.cleanup()

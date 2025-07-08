@@ -127,6 +127,13 @@ class RunConfig():
     def load_from_file(cls, config_file):
         with open(config_file, "r") as json_fd:
             jd = json.load(json_fd)
+            if "grading_dir" not in jd:
+                raise ValueError("PA run config founr at {} does not contain `grading_dir`  attribute".format(config_file))
+            _grading_dir = pathlib.Path(jd["grading_dir"])
+            if not _grading_dir.is_absolute():
+                _grading_dir = (pathlib.Path(config_file).parent / _grading_dir).resolve()
+                jd["grading_dir"] = _grading_dir
+
             return RunConfig(**jd)
 
     @classmethod
@@ -339,13 +346,13 @@ class RunInstance():
     def do_notes(self, command):
         grading_script = self.config.grading_script
         if grading_script is None:
-            msg("[STEP 2] No grading script for this pset, skipping notes pass".format(command),
+            msg("No grading script for this pset, skipping notes pass".format(command),
                 color=c.WARNING)
             return
 
         runner = self.config.get_runner(command)
         if runner.eval is None:
-            msg("[STEP 2] No grading function found for {}, skipping notes pass".format(command),
+            msg("No grading function found for {}, skipping notes pass".format(command),
                 color=c.OKBLUE)
             return
 
@@ -577,10 +584,13 @@ def main(input_args):
 
 
         ok = cr.is_passing() if use_expected else results.is_passing()
-        print("\nOverall result:  {}"
-              .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL)))
-        if use_expected and (not cr.is_passing()):
-            _print_set_expected()
+        if not results.has_tests():
+            print("\nOverall result: {}{}{} (no JSON-based test data present)".format(c.WARNING, "UNKNOWN", c.ENDC))
+        else:
+            print("\nOverall result:  {}"
+                  .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL)))
+            if use_expected and (not cr.is_passing()):
+                _print_set_expected()
 
         def _exists(x: pathlib.Path | None):
             if x is None:

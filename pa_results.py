@@ -222,8 +222,15 @@ class PAResults():
         test = self.get_test(t_name)
         return test.is_passing()
 
+    def has_tests(self):
+        return len(self.tests) > 0
+
     def is_passing(self):
-        return all([t.is_passing() for t in self.tests])
+        if len(self.tests) == 0:
+            # Want to trigger failure if no tests are present
+            return False
+        else:
+            return all([t.is_passing() for t in self.tests])
 
     def add_grading_rubric(self, rubric_info: dict[str,PaGradeEntry]):
         self.grades = rubric_info
@@ -333,7 +340,8 @@ class PAResults():
 
     def show_notes(self):
         if not self.has_notes():
-            print("No grading notes found")
+            print("=== Grading notes ===")
+            print("\tNo grading notes found")
             return
 
         print("=== Grading notes ===")
@@ -364,7 +372,13 @@ class PAResults():
             failed_str = "({} failed)".format(failed) if failed > 0 else ""
             print("=== Tests ===\n  Passed: {} / {} tests {} {:>31}".format(passed, total, failed_str, c.fmt_status_bool(failed == 0)))
         else:
-            print("No per-test results found")
+            print("=== Tests ===\n" +
+                  c.WARNING + "WARNING" + c.ENDC +
+                  ":  No JSON tests results found.  JSON test results may not\n"
+                  "be supported for all assignments, so this may or may not be an error.\n"
+                  "If this assignment does not support JSON-based test output, please check\n"
+                  "the output maunally (from the printed output, or log files)"
+                  )
 
         self.show_notes()
 

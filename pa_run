@@ -20,6 +20,7 @@ SCRIPT_PATH = pathlib.Path(os.path.realpath(__file__)).parent.resolve()
 PA_GRADING_RUNNER = SCRIPT_PATH / "pa_notes.php"
 JSON_RESULTS_DEFAULT = pathlib.Path("/tmp/results.json")
 DEFAULT_WORK_DIR = pathlib.Path("/tmp/pa_run")
+COMPARE_RESULTS_NAME = "compare_results.json"
 
 STATUS_PASS = "passed"
 STATUS_FAIL = "failed"
@@ -264,7 +265,7 @@ class RunInstance():
         self.results_json = self.output_dir / "results.json"
         self.runner_json = JSON_RESULTS_DEFAULT
 
-        if self.work_path == DEFAULT_WORK_DIR:
+        if (self.work_path == DEFAULT_WORK_DIR) and self.work_path.exists():
             shutil.rmtree(str(self.work_path))
 
         mkdir(str(self.work_path))
@@ -439,12 +440,12 @@ class RunInstance():
 
         return ok
 
-def compare_results(actual_json: pathlib.Path, expected_json: pathlib.Path):
-    assert(actual_json.exists())
-    assert(expected_json.exists())
+# def compare_results(actual_json: pathlib.Path, expected_json: pathlib.Path):
+#     assert(actual_json.exists())
+#     assert(expected_json.exists())
 
-    r_actual = PAResults.from_json_file(actual_json)
-    r_expected = PAResults.from_json_file(expected_json)
+#     r_actual = PAResults.from_json_file(actual_json)
+#     r_expected = PAResults.from_json_file(expected_json)
 
 
 CHECK_EXPECTED_NONE = "skip"
@@ -466,9 +467,9 @@ def main(input_args):
     parser.add_argument("--work-dir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--no-cleanup", action="store_true", default=False)
-    parser.add_argument("--expected", type=str, default=None)
-    parser.add_argument("--check-expected", type=str,
-                        choices=CHECK_EXPECTED_CHOICES, default=CHECK_EXPECTED_ERROR)
+    parser.add_argument("--skip-expected", action="store_true", default=False)
+    parser.add_argument("--expected-file", type=str, default=None,
+                        help="Expected test.json file")
     parser.add_argument("--save-expected", action="store_true", default=False)
     parser.add_argument("submission_dir", type=str, default=None)
     parser.add_argument("command", type=str, default="list")
@@ -507,14 +508,18 @@ def main(input_args):
 
     work_dir = _setup_dir(args.work_dir)
     output_dir = _setup_dir(args.output_dir)
-    expected_results = pathlib.Path(args.expected) if args.expected else None
-    expected_status = args.check_expected
+    expected_results = pathlib.Path(args.expected_file) if args.expected_file else None
 
     run = RunInstance(config, submission_path,
                       work_dir=work_dir,
                       output_dir=output_dir,
                       expected_results=expected_results,
                       preserve_work_dir=args.no_cleanup)
+
+    compare_results = run.work_path / COMPARE_RESULTS_NAME
+    if compare_results.exists():
+        compare_results.unlink()
+
     ok = True
     try:
         results, run_ok = run.run_checkoff(command)
@@ -527,56 +532,73 @@ def main(input_args):
                 color=c.OKCYAN)
             mkdir(expected_file.parent)
             print(do_exec(["cp", "-v", str(run.runner_json), str(expected_file)]))
-            #results.write_json(expected_file)
-
-        need_expected = (expected_status != CHECK_EXPECTED_NONE)
 
         def _print_set_expected():
             print(c.WARNING + "If you believe the current test results are accurate" + c.ENDC + ", you can set the expected \n"
                   "results by copying the test results to the repo at the appropriate path, e.g.:\n"
                    "\t{}\n"
-                   "\tcp -v {} {}\n"
+ "\tcp -v {} {}\n"
                    .format(run.get_run_command(command),
                            JSON_RESULTS_DEFAULT, _prels(expected_file)))
 
-        # def _do_check_expected(run: RunInstance, runner_json, expected_json):
-        #     cr = CompareResult.from_files(runner_json, expected_json)
+        skip_reason = None
+        use_expected = True
+        cr: CompareResult|None = None
+        expected_ok = False
 
-        cr = None
-        if run_ok and expected_status != CHECK_EXPECTED_NONE:
-            print_status("check_expected", "Starting expected results check")
-            if not expected_file.exists():
-                msg("No expected file found at {}, cannot compare to baseline".format(_prels(expected_file)), color=c.WARNING)
-                ok = False
-                msg("{}:  Runner exited with status {}, but no expected results found".format(_status(ok), run.runner_rv))
-                _print_set_expected()
-                print_status("check_expected", "Expected results check skipped")
-                #"Use --save-expected to save current results as baseline"
+        if args.skip_expected:
+            print_status("check_expected", "Expected results check skipped based on command-line arguments")
+            skip_reason = "Disabled by command line"
+            use_expected = False
+
+        print("Attempting to use expected results at {}".format(_prels(expected_file)))
+        if not expected_file.exists():
+            print_status("check_expected", "No expected results found, skipping check")
+            skip_reason = "No baseline results found"
+            use_expected = False
+
+        if use_expected:
+            cr = CompareResult.from_files(run.runner_json, expected_file)
+            expected_ok = cr.print_summary()
+            if expected_ok:
+                print_status("check_expected",
+                             "{}:  results match expected results".format(_status(expected_ok)))
             else:
-                error_on_fail = (expected_status == CHECK_EXPECTED_ERROR)
-                cr = CompareResult.from_files(run.runner_json, expected_file)
-                expected_ok = cr.print_summary()
-                if expected_ok:
-                    print_status("check_expected",
-                                 "{}:  results match expected results".format(_status(expected_ok)))
-                else:
-                    print_status("check_expected",
-                                 "{}:  results differ from expected results".format(_status(expected_ok)))
-                    _print_set_expected()
-
-                if error_on_fail:
-                    ok = ok and expected_ok
-                else:
-                    print("Expected-results check set in warning-only mode, not returning failure")
-
-        if not need_expected:
-            msg("{}:  Runner exited with status {}; no expected test results to check"
-                .format(_status(run_ok), run.runner_rv))
-            ok = ok and run_ok
+                print_status("check_expected",
+                             "{}:  results differ from expected results".format(_status(expected_ok)))
 
         msg("\n++++++++++++++++++++++ PA_RUN SUMMARY ++++++++++++++++++++++", color=c.OKCYAN)
         results.show()
+        if cr is not None:
+            cr.print_summary(summary_only=True)
+            cr.write_json(compare_results)
+        else:
+            print("=== Check expected results ===\n\tSkipped ({})".format(skip_reason))
 
+
+        ok = cr.is_passing() if use_expected else results.is_passing()
+        print("\nOverall result:  {}"
+              .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL)))
+        if use_expected and (not cr.is_passing()):
+            _print_set_expected()
+
+        def _exists(x: pathlib.Path | None):
+            if x is None:
+                return False
+            else:
+                return x.exists()
+
+        print("")
+        files_to_show = [
+            ("Log file", run.log_file, _exists),
+            ("PA notes", run.notes_json, _exists),
+            ("Full test results", run.results_json, _exists),
+            ("Compare results", compare_results, _exists),
+        ]
+        for x in files_to_show:
+            name, path, proc = x
+            if proc(path):
+               print("{:20s} {}".format(name, _prels(path)))
 
     finally:
         run.cleanup()

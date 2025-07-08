@@ -18,7 +18,6 @@ import colors as c
 from pa_results import PaGradeEntry, PaRunner, PaConfig, PATestEntry, \
     PAResults, STATUS_PASS, STATUS_FAIL
 
-
 class CompareTestStatus(Enum):
     RESULT_MISMATCH = "result"
     OUTPUT_MISMATCH = "output"
@@ -40,7 +39,19 @@ class TestCompareEntry:
         return self.status == STATUS_PASS
 
     def fmt_result(self):
-        return c.color("PASS", c.OKGREEN) if self.is_passing() else c.color("FAIL ({})".format(str(self.reason)), c.FAIL)
+        return c.color("PASS", c.OKGREEN) if self.is_passing() else c.color("FAIL ({})".format(str(self.reason)),
+                                                                            c.FAIL)
+
+    def to_json(self):
+        d = {
+            "name": self.name,
+            "status": self.status,
+            "reason": str(self.reason),
+            "output": self.output,
+            "result_actual": self.t_actual.to_json(),
+            "result_expected": self.t_expected.to_json(),
+        }
+        return d
 
     @classmethod
     def _make_output(cls, actual_str, expected_str):
@@ -105,6 +116,18 @@ class CompareResult():
     def is_passing(self):
         return self.status == STATUS_PASS
 
+    def to_json(self):
+        _tests = [t.to_json() for t in self.tests]
+        d = {
+            "tests": _tests,
+        }
+        return d
+
+    def write_json(self, out_file):
+        with open(str(out_file), "w") as fd:
+            json.dump(self.to_json(), fd,
+                      indent=2)
+
     def build_results(self):
         ok = True
 
@@ -153,7 +176,7 @@ class CompareResult():
 
         if len(self.tests) > 0:
             failed_str = "({} failed)".format(failed) if failed > 0 else ""
-            print("=== Check expected results ===\n  Matched: {} / {} tests {}".format(passed, total, failed_str))
+            print("=== Check expected results ===\n  Matched: {} / {} tests {} {:>30}".format(passed, total, failed_str, c.fmt_status_bool(self.is_passing())))
         else:
             print("No tests found")
 

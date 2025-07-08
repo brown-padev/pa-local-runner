@@ -222,6 +222,9 @@ class PAResults():
         test = self.get_test(t_name)
         return test.is_passing()
 
+    def is_passing(self):
+        return all([t.is_passing() for t in self.tests])
+
     def add_grading_rubric(self, rubric_info: dict[str,PaGradeEntry]):
         self.grades = rubric_info
 
@@ -359,7 +362,7 @@ class PAResults():
 
         if len(self.tests) > 0:
             failed_str = "({} failed)".format(failed) if failed > 0 else ""
-            print("=== Tests ===\n  Passed: {} / {} tests {}".format(passed, total, failed_str))
+            print("=== Tests ===\n  Passed: {} / {} tests {} {:>31}".format(passed, total, failed_str, c.fmt_status_bool(failed == 0)))
         else:
             print("No per-test results found")
 

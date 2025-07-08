@@ -23,3 +23,8 @@ def print_mismatch(name, got, expected):
     print(color(name, BOLD) + " mismatch:")
     print("\t" + color("Got: ", FAIL) + str(got))
     print("\t" + color("Expected: ", OKGREEN) + str(expected))
+
+def fmt_status_bool(s:  bool, pass_str="PASS", fail_str="FAIL"):
+    c = OKGREEN if s else FAIL
+    s = pass_str if s else fail_str
+    return "[{}{}{}]".format(c, s, ENDC)

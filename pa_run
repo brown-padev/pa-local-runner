@@ -376,7 +376,7 @@ class RunInstance():
 
         runner_results = self.runner_json
         if runner_results.exists():
-            results = PAResults.from_json_file(runner_results)
+            results = PAResults.from_runner_json_file(runner_results)
         elif not self.runner_ok():
             results = PAResults.from_log(self.log_file, self.runner_rv)
             if VERBOSE_MODE:

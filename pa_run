@@ -227,7 +227,7 @@ def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=
 
 
 class RunInstance():
-    name: str
+    suite_name: str
     config: RunConfig
     submission_dir: pathlib.Path
     work_path: pathlib.Path
@@ -244,14 +244,14 @@ class RunInstance():
     RV_UNSET = -999
 
     def __init__(self,
-                 name: str,
+                 suite_name: str,
                  config: RunConfig,
                  submission_dir: pathlib.Path,
                  work_dir: pathlib.Path | None=None,
                  output_dir: pathlib.Path | None=None,
                  expected_results: pathlib.Path | None = None,
                  preserve_work_dir=False):
-        self.name = name
+        self.suite_name = suite_name
         self.config = config
         self.submission_dir = submission_dir
 
@@ -379,15 +379,15 @@ class RunInstance():
 
         runner_results = self.runner_json
         if runner_results.exists():
-            results = PAResults.from_runner_json_file(runner_results)
+            results = PAResults.from_runner_json_file(runner_results, suite=self.suite_name)
         elif not self.runner_ok():
-            results = PAResults.from_log(self.log_file, self.runner_rv)
+            results = PAResults.from_log(self.log_file, self.runner_rv, suite=self.suite_name)
             if VERBOSE_MODE:
                 msg("Warning:  no per-test results found, creating from log file due to error")
         else:
             msg("Warning:  no per-test results found, can only compare based on exit status")
             assert (self.runner_rv != self.RV_UNSET)
-            results = PAResults.from_empty()
+            results = PAResults.from_empty(suite=self.suite_name)
             results.runner_rv = self.runner_rv
 
         results.add_grading_rubric(self.config._pa_config.grades)
@@ -473,7 +473,7 @@ def main(input_args):
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--run-config", type=str, default=None)
-    parser.add_argument("--name", type=str, default=None)
+    parser.add_argument("--suite", type=str, default=None)
     parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--work-dir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
@@ -491,7 +491,7 @@ def main(input_args):
     submission_path = pathlib.Path(args.submission_dir).resolve()
     start_dir = args.run_config if args.run_config is not None else submission_path
     config = RunConfig.load_config(start_dir)
-    name = args.name if args.name is not None else submission_path.stem
+    suite_name = args.suite if args.suite is not None else submission_path.stem
 
     if args.verbose:
         VERBOSE_MODE = True
@@ -523,7 +523,7 @@ def main(input_args):
     output_dir = _setup_dir(args.output_dir)
     expected_results = pathlib.Path(args.expected_file) if args.expected_file else None
 
-    run = RunInstance(name, config, submission_path,
+    run = RunInstance(suite_name, config, submission_path,
                       work_dir=work_dir,
                       output_dir=output_dir,
                       expected_results=expected_results,
@@ -571,7 +571,7 @@ def main(input_args):
             use_expected = False
 
         if use_expected:
-            cr = CompareResult.from_files(run.runner_json, expected_file)
+            cr = CompareResult.from_files(run.runner_json, expected_file, suite=suite_name)
             expected_ok = cr.print_summary()
             if expected_ok:
                 print_status("check_expected",

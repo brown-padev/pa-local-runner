@@ -92,7 +92,7 @@ class TestCompareEntry(CTRFTest):
         return ret
 
     @classmethod
-    def from_tests(cls, t_actual: PATestEntry | None, t_expected: PATestEntry | None):
+    def from_tests(cls, t_actual: PATestEntry | None, t_expected: PATestEntry | None, suite: str|None=None):
         reason = CompareTestStatus.OK
         output = ""
 
@@ -128,6 +128,7 @@ class TestCompareEntry(CTRFTest):
                    status=status,
                    reason=reason,
                    output=output,
+                   suite=suite,
                    t_actual=t_actual, t_expected=t_expected)
 
 class CompareResult(CTRFResults):
@@ -136,11 +137,13 @@ class CompareResult(CTRFResults):
                  r_actual: PAResults|None=None,
                  r_expected: PAResults|None=None,
                  tests: list[TestCompareEntry]|None=None,
+                 suite: str|None=None,
                  **kwargs):
         super(CompareResult, self).__init__(**kwargs)
         self._actual = r_actual
         self._expected = r_expected
         self.tests: list[TestCompareEntry] = [] if tests is None else tests
+        self.suite = suite
 
         if len(self.tests) == 0:
             assert(self._actual is not None)
@@ -196,7 +199,8 @@ class CompareResult(CTRFResults):
             t_expected = self._expected.get_test(t, missing_ok=True)
 
             entry = TestCompareEntry.from_tests(t_actual=t_actual,
-                                                t_expected=t_expected)
+                                                t_expected=t_expected,
+                                                suite=self.suite)
 
             self.tests.append(entry)
 
@@ -238,8 +242,8 @@ class CompareResult(CTRFResults):
 
 
     @classmethod
-    def from_files(cls, actual_json, expected_json):
+    def from_files(cls, actual_json, expected_json, suite=None):
         r_actual = PAResults.from_json_file(actual_json)
         r_expected = PAResults.from_json_file(expected_json)
 
-        return cls(r_actual, r_expected)
+        return cls(r_actual, r_expected, suite=suite)

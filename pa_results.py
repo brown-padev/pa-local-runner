@@ -133,14 +133,17 @@ class PATestEntry(CTRFTest):
     name: str
     output: str
     status: str
+    suite: str | None
     output_format: str
     visibility: str
     tags: list[str]
     duration: int
 
     def __init__(self, name="", output="", status="",
-                 output_format="text", visibility="visible", duration=0, tags=None):
-        super(PATestEntry, self).__init__(name, status)
+                 output_format="text", visibility="visible",
+                 suite=None,
+                 duration=0, tags=None):
+        super(PATestEntry, self).__init__(name, status, suite=suite)
         self.output = output
         self.output_format = output_format
         self.visibility = visibility
@@ -165,6 +168,7 @@ class PATestEntry(CTRFTest):
 
     def build_ctrf_output(self, d):
         d["stdout"] = self.output.split("\n")
+
         _extra =  {
             "visibility": self.visibility,
             "output_format": self.output_format,
@@ -172,8 +176,8 @@ class PATestEntry(CTRFTest):
         self.add_extra(_extra)
 
     @classmethod
-    def from_basic_json(cls, d):
-        return PATestEntry(**d)
+    def from_basic_json(cls, d, suite=None):
+        return PATestEntry(suite=suite, **d)
 
     @classmethod
     def add_from_ctrf(cls, d, kw):
@@ -203,6 +207,7 @@ class PAResults(CTRFResults):
             return "{} / {}".format(self.value, self.rubric.max)
 
     def __init__(self, execution_time=0, tests=None,
+                 suite=None,
                  grades=None, notes=None,
                  **kwargs):
         super(PAResults, self).__init__(**kwargs)
@@ -211,6 +216,7 @@ class PAResults(CTRFResults):
         self.tests = tests if tests is not None else []
         self.t_dict = {t.name: t for t in tests} if tests is not None else dict()
 
+        self.suite = suite
         self.grades = grades
         self.notes = notes
         self.output = ""
@@ -305,12 +311,12 @@ class PAResults(CTRFResults):
         self.runner_rv = rv
 
     @classmethod
-    def from_empty(cls):
-        return PAResults(execution_time=0, tests=dict())
+    def from_empty(cls, suite=None):
+        return PAResults(execution_time=0, tests=dict(), suite=suite)
 
     @classmethod
-    def from_log(cls, log_file, rv):
-        results = PAResults(execution_time=0, tests=dict())
+    def from_log(cls, log_file, rv, suite=None):
+        results = PAResults(execution_time=0, tests=dict(), suite=suite)
         with open(log_file, "r") as log_fd:
             output = log_fd.read()
             results.add_run_output(output, rv)
@@ -336,24 +342,25 @@ class PAResults(CTRFResults):
     #                      notes=notes)
 
     @classmethod
-    def from_runner_json(cls, json_data):
+    def from_runner_json(cls, json_data, suite: str|None=None):
         _tests = _get(json_data, "tests")
         _exec_time = _get(json_data, "execution_time", 0)
         _grades = _get(json_data, "grades", None, default_none=True)
         grades = {k: PaGradeEntry.from_json(v) for k, v in _grades.items()} \
             if _grades is not None else None
         notes = _get(json_data, "notes", None, default_none=True)
-        tests = [PATestEntry.from_basic_json(t) for t in _tests]
+        tests = [PATestEntry.from_basic_json(t, suite=suite) for t in _tests]
 
         return PAResults(_exec_time,
                          tests=tests,
+                         suite=suite,
                          grades=grades,
                          notes=notes)
     @classmethod
-    def from_runner_json_file(cls, json_file):
+    def from_runner_json_file(cls, json_file, suite=None):
         with open(json_file, "r") as fd:
             json_data = json.load(fd)
-            return cls.from_runner_json(json_data)
+            return cls.from_runner_json(json_data, suite=suite)
 
     def build_ctrf_output(self, d):
         if self.grades is not None:
@@ -370,7 +377,7 @@ class PAResults(CTRFResults):
         kw["tests"] = tests
 
         cls._add_from_extra(kw, d, "grades")
-        cls._add_from_extra(kw, d, "noges")
+        cls._add_from_extra(kw, d, "notes")
 
     def write_json(self, out_file):
         with open(str(out_file), "w") as fd:

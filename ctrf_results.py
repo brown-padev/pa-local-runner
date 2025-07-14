@@ -40,17 +40,20 @@ class CTRFTest():
     name: str
     status: str
     duration: int = 0
+    suite: str | None = None
     extra: dict
 
     def __init__(self,
                  name: str,
                  status: str,
                  duration: int=0,
+                 suite: str|None = None,
                  **kwargs):
 
         self.name = name
         self.status = status
         self.duration = duration
+        self.suite = suite
         self.tags = []
         self.extra = dict()
         self.extra.update(kwargs)
@@ -77,6 +80,8 @@ class CTRFTest():
             "tags": self.tags,
             "extra": self.extra,
         }
+        if self.suite:
+            d["suite"] = self.suite
 
         self.build_ctrf_output(d)
         return d
@@ -87,6 +92,14 @@ class CTRFTest():
             return d[k]
         else:
             raise ValueError(f"{d} not in {d}")
+
+    @classmethod
+    def _get_maybe(cls, d, k, default):
+        if k in d:
+            return d[k]
+        else:
+            return default
+
 
     @classmethod
     def _addif(cls, kw, d, k, k_arg=None):
@@ -111,6 +124,9 @@ class CTRFTest():
         cls._addif(kwargs, d, "name")
         cls._addif(kwargs, d, "status")
         cls._addif(kwargs, d, "duration")
+
+        if "suite" in d:
+            kwargs["suite"] = d["suite"]
 
         cls.add_from_ctrf(d, kwargs)
 

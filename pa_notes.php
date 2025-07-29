@@ -4,15 +4,37 @@ class FakePset {
     public $grades = array();
 }
 
+class FakeResult {
+    function __construct() {
+        // Do nothing
+    }
+
+    function fetch_row() {
+        return array();
+    }
+}
+
+class FakeConf {
+    function __construct() {
+        // Do nothing
+    }
+
+    function qe($arg) {
+        return new FakeResult();
+    }
+}
+
 class FakePsetInfo {
 
     public $_log_file;
     public $_notes;
     public $pset;
+    public $conf;
 
     function __construct($log_file, $pset_json) {
         $this->_log_file = $log_file;
         $this->_notes = null;
+        $this->conf = new FakeConf();
 
         if ($pset_json) {
             $this->load_pset($pset_json);

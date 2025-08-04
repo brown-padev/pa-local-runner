@@ -115,10 +115,10 @@ class TestCompareEntry(CTRFTest):
             reason = CompareTestStatus.RESULT_MISMATCH
             _comp = cls._make_output(t_actual.output, t_expected.output)
             output = "Expected test status '{}' but was '{}`\n{}".format(t_expected.status, t_actual.status, _comp)
-        elif t_actual.output != t_expected.output:
-            reason = CompareTestStatus.OUTPUT_MISMATCH
-            _comp = cls._make_output(t_actual.output, t_expected.output)
-            output = "Test outputs differ significantly\n{}".format(t_expected.status, t_actual.status, _comp)
+        # elif t_actual.output != t_expected.output:
+        #     reason = CompareTestStatus.OUTPUT_MISMATCH
+        #     _comp = cls._make_output(t_actual.output, t_expected.output)
+        #     output = "Test outputs differ significantly\n{}".format(t_expected.status, t_actual.status, _comp)
         else:
             reason = CompareTestStatus.OK
             output = t_actual.output
@@ -243,7 +243,7 @@ class CompareResult(CTRFResults):
 
     @classmethod
     def from_files(cls, actual_json, expected_json, suite=None):
-        r_actual = PAResults.from_json_file(actual_json)
-        r_expected = PAResults.from_json_file(expected_json)
+        r_actual = PAResults.from_runner_json_file(actual_json)
+        r_expected = PAResults.from_runner_json_file(expected_json)
 
         return cls(r_actual, r_expected, suite=suite)

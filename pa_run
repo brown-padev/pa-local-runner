@@ -214,6 +214,7 @@ def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=
     if (not attach):
         for line in proc.stdout:
             sys.stdout.buffer.write(line)
+            sys.stdout.flush()
             log_fd.write(line)
 
     proc.wait()

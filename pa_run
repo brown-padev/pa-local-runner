@@ -233,6 +233,7 @@ class RunInstance():
     work_path: pathlib.Path
     work_tempfile: tempfile.TemporaryDirectory | None = None
     preserve_work_dir: bool = False
+    submission_is_repo: bool = False
     output_dir: pathlib.Path
     log_file: pathlib.Path
     notes_json: pathlib.Path
@@ -250,12 +251,14 @@ class RunInstance():
                  work_dir: pathlib.Path | None=None,
                  output_dir: pathlib.Path | None=None,
                  expected_results: pathlib.Path | None = None,
-                 preserve_work_dir=False):
+                 preserve_work_dir=False,
+                 submission_is_repo=False):
         self.suite_name = suite_name
         self.config = config
         self.submission_dir = submission_dir
 
         self.preserve_work_dir = preserve_work_dir
+        self.submission_is_repo = submission_is_repo
         if work_dir is None:
             #self.work_tempfile = tempfile.TemporaryDirectory(delete=(not preserve_work_dir))
             #self.work_path = pathlib.Path(self.work_tempfile.name)
@@ -317,10 +320,13 @@ class RunInstance():
     def do_run(self, command):
         root_work_path = pathlib.Path("repo")
         #pset_path = root_work_path / self.config._pa_config.directory
-        pset_path = root_work_path / str(self.config.target_dir)
-        self._exec(f"mkdir -pv {str(pset_path)}")
+        if self.submission_is_repo:
+            self._exec(f"cp -pTRv {self.submission_dir} {str(root_work_path)}")
+        else:
+            pset_path = root_work_path / str(self.config.target_dir)
+            self._exec(f"mkdir -pv {str(pset_path)}")
+            self._exec(f"cp -pTRv {self.submission_dir} {str(pset_path)}")
         self._exec(f"mkdir -pv {str(self.output_dir)}")
-        self._exec(f"cp -pTRv {self.submission_dir} {str(pset_path)}")
 
         if self.config.use_overlay:
             self._exec(f"cp -pTRv {str(self.config.overlay_dir)} {str(root_work_path)}")
@@ -478,6 +484,7 @@ def main(input_args):
     parser.add_argument("--work-dir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--no-cleanup", action="store_true", default=False)
+    parser.add_argument("--submission-is-repo", action="store_true", default=False)
     parser.add_argument("--skip-expected", action="store_true", default=False)
     parser.add_argument("--expected-file", type=str, default=None,
                         help="Expected test.json file")
@@ -527,7 +534,8 @@ def main(input_args):
                       work_dir=work_dir,
                       output_dir=output_dir,
                       expected_results=expected_results,
-                      preserve_work_dir=args.no_cleanup)
+                      preserve_work_dir=args.no_cleanup,
+                      submission_is_repo=args.submission_is_repo)
 
     compare_results = run.output_dir / COMPARE_RESULTS_NAME
     if compare_results.exists():

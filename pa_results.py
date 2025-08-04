@@ -372,7 +372,8 @@ class PAResults(CTRFResults):
 
     @classmethod
     def add_from_ctrf(cls, d, kw):
-        _tests = cls._get(d, "tests")
+        _results = cls._get(d, "results")
+        _tests = cls._get(_results, "tests")
         tests = [PATestEntry.from_ctrf(t) for t in _tests]
         kw["tests"] = tests
 

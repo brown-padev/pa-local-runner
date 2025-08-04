@@ -6,11 +6,14 @@ import shutil
 import pathlib
 import argparse
 import tempfile
+import functools
 import subprocess
 
 import dataclasses
 from dataclasses import dataclass, field
 from types import NoneType
+
+from stest import STest, SResults
 
 import colors as c
 
@@ -36,7 +39,7 @@ class TestStatus(Enum):
     PENDING = "pending"
     OTHER = "other"
 
-class CTRFTest():
+class CTRFTest(STest):
     name: str
     status: str
     duration: int = 0
@@ -50,6 +53,7 @@ class CTRFTest():
                  suite: str|None = None,
                  **kwargs):
 
+        super(STest, self).__init__()
         self.name = name
         self.status = status
         self.duration = duration
@@ -58,8 +62,14 @@ class CTRFTest():
         self.extra = dict()
         self.extra.update(kwargs)
 
+    def get_name(self):
+        return self.name
+
     def is_passing(self):
         return self.status == STATUS_PASS
+
+    def fmt_result(self):
+        return c.color("PASS", c.OKGREEN) if self.is_passing() else c.color("FAIL", c.FAIL)
 
     def add_extra(self, d: dict):
         self.extra.update(d)
@@ -67,10 +77,24 @@ class CTRFTest():
     def add_extra_item(self, k, v):
         self.extra[k] = v
 
+    def get_extra(self):
+        return self.extra
+
+    def fmt_result(self):
+        return c.color("PASS", c.OKGREEN) if self.is_passing() else c.color("FAIL", c.FAIL)
+
+    def get_score_str(self):
+        return ""
+
     def build_ctrf_output(self, d):
         # Subclass will override
         raise NotImplementedError("yo")
-        pass
+
+    def get_output(self):
+        d = dict()
+        self.build_ctrf_output(d)
+        output = "\n".join(d["stdout"])
+        return output
 
     def to_ctrf(self):
         d = {
@@ -146,7 +170,7 @@ class CTRFTool():
         return CTRFTool(**d)
 
 
-class CTRFResults():
+class CTRFResults(SResults):
     report_format: str
     version: str
     tool: CTRFTool
@@ -154,6 +178,7 @@ class CTRFResults():
 
     def __init__(self, report_format="CTRF", version="0.0.0",
                  tool: CTRFTool|None = None):
+        super(CTRFResults, self).__init__()
         self.report_format = report_format
         self.version = version
         self.tool = CTRFTool() if tool is None else tool
@@ -162,10 +187,31 @@ class CTRFResults():
     def get_tests(self):
         raise NotImplementedError("Subclass must implement")
 
+    def get_total_tests(self):
+        summary = self._make_summary()
+        return summary["tests"]
+
+    def get_total_passed(self):
+        summary = self._make_summary()
+        return summary["passed"]
+
+    def get_total_failed(self):
+        summary = self._make_summary()
+        return summary["failed"]
+
+    def get_score(self):
+        return 0.0
+
+    def get_max_score(self):
+        return 0.0
+
+    def get_extra(self):
+        return self.extra
+
     @classmethod
-    def _addif(cls, kw, d, k):
+    def _addif(cls, kw, d, k, k_arg=None):
         if k in d:
-            kw[k] = d[k]
+            kw[k_arg if k_arg else k] = d[k]
 
     @classmethod
     def _add_from_extra(cls, kw, d, k):
@@ -185,6 +231,7 @@ class CTRFResults():
     def add_extra_item(self, k, v):
         self.extra[k] = v
 
+    @functools.cache
     def _make_summary(self):
         total = 0
         passed = 0
@@ -247,7 +294,7 @@ class CTRFResults():
     def from_ctrf(cls, d):
         kwargs = {}
 
-        cls._addif(kwargs, d, "reportFormat")
+        cls._addif(kwargs, d, "reportFormat", k_arg="report_format")
         cls._addif(kwargs, d, "version")
 
         tool = CTRFTool.from_json(d["tool"]) if "tool" in d else CTRFTool()

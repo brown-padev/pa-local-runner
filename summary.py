@@ -8,12 +8,12 @@ import subprocess
 
 HAS_PYSTACHE = False
 try:
-        import pystache
-        import ansi2html
-        from ansi2html.style import get_styles
-        HAS_PYSTACHE = True
+    import pystache
+    import ansi2html
+    from ansi2html.style import get_styles
+    HAS_PYSTACHE = True
 except ImportError:
-        print("Warning:  pystache not found, will not be able to generate summary info")
+    print("Warning:  pystache not found, will not be able to generate summary info")
 
 from dataclasses import dataclass
 
@@ -49,6 +49,25 @@ td {
 .fail {
     color: #ff0000;
 }
+
+.bar-outer {
+    background-color: #eeeeee;
+    border-radius: 1px;
+    overflow: hidden;
+    height: 1.2em;
+    width: 100%;
+}
+
+.bar-inner {
+    height: 100%;
+    text-align: right;
+    padding-right: 1px;
+    color: red;
+    font-weight: bold;
+    line-height: 1.2em;
+    white-space: no-wrap;
+}
+
 {{{ styles }}}
 </style>
 </head>
@@ -65,12 +84,12 @@ TEMPLATE_SUMMARY = """
 <table>
 <thead>
 <tr>
-<td>Test name</td><td>Pass</td><td>Fail</td>
+<td>Test name</td><td>Passing</td><td>Failing</td><td>%</td>
 </tr>
 </thead>
 <tbody>
 {{ #tests }}
-  <tr><td><a href="#test-{{name}}">{{ name }}</a></td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td></tr>
+  <tr><td><a href="#test-{{name}}">{{ name }}</a></td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
 {{ /tests }}
 </tbody>
 </table>
@@ -94,10 +113,11 @@ Failing ({{{count_failing}}}):
 {{ /tests }}
 """
 
-TEMPLATE_TEST = """
+TEMPLATE_STUDENT_HEAD = """
 <h1 id="results">Test results</h1>
+"""
 
-{{ #results }}
+TEMPLATE_STUDENT_SUMMARY = """
 <h2 id="results-{{name}}">{{name}}</h2>
 <table>
 <tr><td>Total</td><td>{{total}}</td></tr>
@@ -107,6 +127,10 @@ TEMPLATE_TEST = """
 </table>
 <br />
 <br />
+"""
+
+TEMPLATE_STUDENT_TEST = """
+<h3 id="results-bytest-{{name}}">Per-test results</h3>
 <table>
 <thead>
 <tr>
@@ -115,32 +139,23 @@ TEMPLATE_TEST = """
 </thead>
 <tbody>
 {{ #tests }}
-  <tr><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
+  <tr class="row-summary"><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
+  <tr class="row-output"><td colspan="3"><details><summary>Output</summary>
+  <pre>
+  {{{ output }}}
+  </pre>
+  </details>
+  </td>
+  </tr>
 {{ /tests }}
 </tbody>
 </table>
-
 <br />
 <br />
-<h3 id="results-bytest-{{name}}">Per-test results</h3>
-{{ #tests }}
-<h4>{{name}}</h4>
-<table>
-<tr><td>Status</td><td>{{{status}}}</td></tr>
-<tr><td>Score</td><td>{{score}}</td></tr>
-</table>
-<br />
-<pre>
-{{{output}}}
-</pre>
-
-
-{{ /tests }}
-
-{{ /results }}
-
 
 """
+
+
 
 @dataclass
 class SubmissionTest():
@@ -212,6 +227,10 @@ class GSSummary():
         _output = conv.convert(c.ENDC + _output + c.ENDC, full=False)
         return _output
 
+    def _make_bar(self, count, total, figs=1):
+        perc = round((count / total) * 100, figs)
+        return "<div class=\"bar-outer\"><div class=\"bar-inner\" style=\"width:{}%\">{} %</div></div>".format(perc, perc)
+
     def _add_summary_table(self, fd):
         to_render = {
             "tests": [
@@ -219,6 +238,8 @@ class GSSummary():
                     "name": t_name,
                     "count_passing": len([t for t in t_infos if t.is_passing()]),
                     "count_failing": self._ffc(len([t for t in t_infos if not t.is_passing()])),
+                    "percent": self._make_bar(len([t for t in t_infos if not t.is_passing()]),
+                                              len([t for t in t_infos])),
                     "t_passing": [{
                         "name": t.name,
                         "score": t.t.get_score_str(),
@@ -255,11 +276,42 @@ class GSSummary():
                 } for r_name, sr in self.result_map.items()
             ],
         }
-        out = pystache.render(TEMPLATE_TEST, to_render)
-        fd.write(out)
+        header = {}
+        self._render(TEMPLATE_STUDENT_HEAD, header)
+
+        for r_name, sr in self.result_map.items():
+            summary = {
+                "name": r_name,
+                "total": sr.results.get_total_tests(),
+                "passed": sr.results.get_total_passed(),
+                "failed": self._ffc(sr.results.get_total_failed()),
+                "score": sr.results.get_score(),
+                "max_score": sr.results.get_max_score(),
+            }
+            self._render(TEMPLATE_STUDENT_SUMMARY, summary)
+
+            tests_to_print = [t for t in sr.results.get_tests() if not t.is_passing()]
+            test_data = {
+                "tests": [{
+                    "name": t.get_name(),
+                    "status": self._ffs("PASS" if t.is_passing() else "FAIL"),
+                    "score": t.get_score_str(),
+                    "output": self._prepare_output(t.get_output()),
+                } for t in tests_to_print],
+            }
+            self._render(TEMPLATE_STUDENT_TEST, test_data)
+
+    def _render(self, template, data):
+        assert(self.fd)
+        out = pystache.render(template, data)
+        self.fd.write(out)
+
+    def _set_fd(self, fd):
+        self.fd = fd
 
     def do_summary(self, output_file: str):
         with open(output_file, "w") as fd:
+            self._set_fd(fd)
             self._add_header(fd)
             self._add_summary_table(fd)
             self._add_test_table(fd)

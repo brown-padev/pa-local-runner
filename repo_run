@@ -29,43 +29,12 @@ STATUS_FAIL = "failed"
 
 VERBOSE_MODE = True
 SCRIPT_PATH = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
-RESULTS_PREFIX = "auto_results"
-WORK_PREFIX = pathlib.Path("/tmp/repo_run")
 
-DEFAULT_REPO_PATH = WORK_PREFIX / "repos"
-DEFAULT_WORK_PATH = WORK_PREFIX / "work"
+from result_types import ResultLoader, ResultType
 
-OUTPUT_PREFIX = "auto_output"
-
-
-class ResultType(Enum):
-    NONE = "none"
-    AUTO = "auto"
-    GRADESCOPE = "gradescope"
-    PA = "pa"
-
-SUPPORTED_RESULT_TYPES = set()
-
-RESULT_MODULES = [
-    (ResultType.GRADESCOPE, "gs_test"),
-    (ResultType.PA, "pa_results"),
-]
-
-for rmod in RESULT_MODULES:
-    rtype, mod_name = rmod
-    try:
-        globals()[mod_name] = importlib.import_module(mod_name)
-        SUPPORTED_RESULT_TYPES.add(rtype)
-    except ImportError:
-        pass
-
-class ExistMode(Enum):
-    IGNORE = "ignore"
-    PULL = "pull"
-    RECLONE = "reclone"
-
-    def __str__(self):
-        return self.value
+import config as cfg
+from config import ExistMode, RunSource, RunConfig, \
+    RepoConfig, RunStep
 
 
 def do_exec(cmd, check=True, shell=True, cwd=None, return_rv=False):
@@ -157,9 +126,6 @@ def mkdir(dir_name):
     pathlib.Path.mkdir(pathlib.Path(dir_name),
                        exist_ok=True, parents=True)
 
-def get_run_string():
-    return secrets.token_bytes(4).hex()
-
 
 class RepoUrl():
     url: str
@@ -242,83 +208,6 @@ class GitRepo(Repo):
         do_exec(f"git clone {str(self.url.get_ssh())} {str(target_dir)}")
 
 
-class RunSource(Enum):
-    DISK = "disk"
-    LIST = "list"
-    GIT = "git"
-
-class StepKind(Enum):
-    PREPARE = "prepare"
-    COMPILE = "compile"
-    RUN = "run"
-
-
-@dataclass
-class ResultConfig():
-    type: ResultType
-    path: pathlib.Path = pathlib.Path("/dev/null")
-
-@dataclass
-class RunStep():
-    name: str
-    run: str
-    kind: StepKind = StepKind.RUN
-    results: ResultConfig = field(default_factory=ResultConfig)
-
-@dataclass(frozen=False)
-class RepoConfig():
-    path: pathlib.Path = pathlib.Path(DEFAULT_REPO_PATH)
-    list_file: pathlib.Path | None = None
-    pattern: str = "*"
-    github_org: str = ""
-    source: RunSource = RunSource.DISK
-
-@dataclass(frozen=False)
-class RunConfig():
-    repos: RepoConfig
-    results_path: pathlib.Path
-    summary_path: pathlib.Path
-    steps: list[RunStep]
-    run_id: str = ""
-
-    @classmethod
-    def make_default(cls, cwd: pathlib.Path):
-        repos = RepoConfig(path=pathlib.Path(DEFAULT_REPO_PATH),
-                           pattern="*",
-                           github_org="",
-                           source=RunSource.DISK)
-        steps = []
-
-        return cls(repos=repos,
-                   results_path=(cwd / RESULTS_PREFIX),
-                   summary_path=(cwd / OUTPUT_PREFIX),
-                   run_id=get_run_string(),
-                   steps=steps)
-
-    def update_config(self, args, cwd: pathlib.Path):
-        if args.run_id:
-            self.run_id = args.run_id
-        else:
-            self.run_id = get_run_string()
-
-        if args.repo_dir:
-            self.repos.path = pathlib.Path(args.repo_dir)
-        elif (not self.repos.path):
-            self.repos.path = self.repos.path.resolve()
-
-        def _res(attr, default):
-            curr = getattr(self, attr)
-
-            if not curr:
-                setattr(self, attr, default)
-            else:
-                _res = curr.resolve()
-                setattr(self, attr, _res)
-
-        _res("results_path", cwd / RESULTS_PREFIX)
-        _res("summary_path", cwd / OUTPUT_PREFIX)
-
-
 class RepoList():
     repo_path: pathlib.Path
     mode: RunSource
@@ -365,7 +254,7 @@ class RepoRunner():
 
     def __init__(self, config: RunConfig):
         self.config = config
-        self.work_path = DEFAULT_WORK_PATH
+        self.work_path = cfg.DEFAULT_WORK_PATH
         self.results_path = config.results_path
         self.run_id = config.run_id
 
@@ -405,6 +294,7 @@ class RepoRunner():
 
         def _parse_cmd(cmd: str):
             cmd = cmd.replace("${{ repo }}", str(work_dir))
+            cmd = cmd.replace("${{ repo_name }}", repo.name())
             return cmd
 
         runner_results_file = None
@@ -423,43 +313,19 @@ class RepoRunner():
                 runner_results_file = step.results.path
                 result_type = step.results.type
 
-        if runner_results_file is None:
-            raise ValueError("No result file generated after running steps")
+        if result_type != ResultType.NONE:
+            if runner_results_file is None:
+                raise ValueError("No result file generated after running steps")
 
-        assert(runner_results_file is not None)
-        if not runner_results_file.exists():
-            raise ValueError(f"No results found at {str(runner_results_file)}")
+            assert(runner_results_file is not None)
+            if not runner_results_file.exists():
+                raise ValueError(f"No results found at {str(runner_results_file)}")
 
-        do_exec(f"cp -v {str(runner_results_file)} {str(final_results_file)}")
+            do_exec(f"cp -v {str(runner_results_file)} {str(final_results_file)}")
 
         return result_type, final_results_file
 
 
-def load_results(result_type, result_file):
-    _type = result_type
-
-    if result_type == ResultType.AUTO:
-        with open(result_file, "r") as json_fd:
-            jd = json.load(json_fd)
-            if "reportFormat" in jd and jd["reportFormat"] == "CTRF":
-                _type = ResultType.PA
-            if ("autograder_output" in jd) or ("stdout_visibility" in jd):
-                _type = ResultType.GRADESCOPE
-
-    if _type == ResultType.AUTO:
-        raise ValueError("Could not auto-detect JSON results")
-
-    if _type == ResultType.GRADESCOPE:
-        assert(ResultType.GRADESCOPE in SUPPORTED_RESULT_TYPES)
-
-        res = gs_test.GSResults.from_json_file(result_file)
-        return res
-    elif _type == ResultType.PA:
-        assert(ResultType.PA in SUPPORTED_RESULT_TYPES)
-        res = pa_results.PAResults.from_json_file(result_file)
-        return res
-    else:
-        raise NotImplementedError(f"Unsupported result type {result_type}")
 
 def main(input_args):
     parser = argparse.ArgumentParser()
@@ -480,21 +346,12 @@ def main(input_args):
     sp_cmds["fetch"].add_argument("--exist-mode", type=ExistMode,
                                   default=ExistMode.IGNORE,
                                   choices=list(ExistMode))
-    sp_cmds["summarize"].add_argument("results_dir", type=str, default=None)
+    sp_cmds["summarize"].add_argument("results_dir", nargs="*")
 
     args = parser.parse_args(input_args)
     cwd = pathlib.Path(os.getcwd())
 
-    config = RunConfig.make_default(cwd)
-    if args.config:
-        with open(args.config, "r") as in_fd:
-            config_lines = in_fd.read()
-            config_dict = yaml.safe_load(config_lines)
-            config = dacite.from_dict(data_class=RunConfig,
-                                      data=config_dict,
-                                      config=dacite.Config(cast=[Enum, pathlib.Path]))
-
-    config.update_config(args, cwd)
+    config = RunConfig.make_or_load_args(cwd, args)
 
     run_id = config.run_id
     print("Using run ID {}".format(run_id))
@@ -503,14 +360,18 @@ def main(input_args):
 
     runner = RepoRunner(config)
 
-    mkdir(config.repos.path)
-    mkdir(config.results_path)
-    mkdir(config.summary_path)
-
     needs_fetch = args.command == "fetch" or args.command == "all"
     needs_build = args.command == "build" or args.command == "all"
     needs_run = args.command == "run" or args.command == "all"
     needs_summary = args.command == "summarize" or needs_run
+
+    if needs_fetch or needs_build or needs_run:
+        mkdir(config.repos.path)
+        mkdir(config.results_path)
+
+    if needs_summary:
+        mkdir(config.summary_path)
+
 
     urls = []
 
@@ -523,14 +384,24 @@ def main(input_args):
 
             if (result_type != ResultType.NONE) and (results_file.exists()):
                 print("Found results at {}".format(results_file))
-                results = load_results(result_type, results_file)
+                results = ResultLoader.load_results(result_type, results_file)
                 results.show(descr_on_fail=True, descr_on_pass=False)
                 summary.add(repo.name, results)
 
+            if result_type == ResultType.NONE:
+                print("Runner did not produce results, not generating summary")
+                needs_summary = False
+
     if needs_summary:
+        search_path = config.results_path
+        if len(args.results_dir) == 1:
+            search_path = pathlib.Path(args.results_dir).resolve()
+        elif len(args.results_dir) > 1:
+            raise NotImplementedError("TODO")
+
         if not needs_run:
-            for fp in config.results_path.glob("*.json"):
-                results = load_results(ResultType.AUTO, fp)
+            for fp in search_path.glob("*.json"):
+                results = ResultLoader.load_results(ResultType.AUTO, fp)
                 name = fp.stem
                 summary.add(name, results)
 

@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import signal
+import shutil
+import pathlib
+import secrets
+import tempfile
+import importlib
+import argparse
+import subprocess
+
+from dataclasses import dataclass, field
+from stest import STest, SResults
+from summary import GSSummary
+
+from enum import Enum
+
+import yaml
+import dacite
+
+import colors as c
+
+from config import RunConfig
+import config as cfg
+
+from result_types import ResultLoader, ResultType
+
+def main(input_args):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str)
+    parser.add_argument("--run-id", type=str, default=None)
+    parser.add_argument("--repo-dir", type=str)
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("results_dir", nargs="*")
+
+    args = parser.parse_args(input_args)
+
+    cwd = pathlib.Path(os.getcwd())
+
+    config = RunConfig.make_or_load_args(cwd, args)
+    run_id = config.run_id
+    summary = GSSummary(run_id)
+
+    search_path = config.results_path
+    if len(args.results_dir) == 1:
+        search_path = pathlib.Path(args.results_dir).resolve()
+    elif len(args.results_dir) > 1:
+        raise NotImplementedError("TODO")
+
+    count = 0
+    for fp in search_path.glob("*.json"):
+        results = ResultLoader.load_results(ResultType.AUTO, fp)
+        name = fp.stem
+        summary.add(name, results)
+        count += 1
+
+        if (args.limit > 0) and (count >= args.limit):
+            print("Ending result processing after {} results".format(args.limit))
+            break
+
+    output_file = config.summary_path / "summary_{}.html".format(run_id)
+    summary.do_summary(str(output_file))
+    print("Summary written to {}".format(str(output_file)))
+
+
+
+if __name__ == "__main__":
+   main(sys.argv[1:])

@@ -55,6 +55,21 @@ class SResults():
     def get_extra(self):
         raise NotImplementedError("Subclass must implement")
 
+    def is_all_passing(self):
+        return all([t.is_passing() for t in self.get_tests()])
+
+    def is_all_failing(self):
+        return all([(not t.is_passing()) for t in self.get_tests()])
+
+    def num_tests(self):
+        return len(self.get_tests())
+
+    def num_passing(self):
+        return len([t for t in self.get_tests() if t.is_passing()])
+
+    def num_failing(self):
+        return len([t for t in self.get_tests() if (not t.is_passing())])
+
     def show(self, descr_on_fail=True, descr_on_pass=True):
         total_points = 0.0
         points_earned = 0.0

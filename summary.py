@@ -37,6 +37,23 @@ def _get(d, k, default=None):
             raise ValueError(f"{d} not in {d}")
 
 
+def order_by_dict(d, sort="value", reverse=True):
+    if sort == "value":
+        proc = lambda k: d[k]
+    elif sort == "len":
+        proc = lambda k: len(d[k])
+    elif sort == "key":
+        proc = lambda k: k
+    else:
+        proc = sort
+
+    ordering = sorted(list(d.keys()), key=proc,
+                      reverse=reverse)
+    for key in ordering:
+        value = d[key]
+        yield key, value
+
+
 TEMPLATE_HEAD = """
 <DOCTYPE html>
 <head>
@@ -57,6 +74,20 @@ tr:nth-child(even) {
     background-color: #f2f2f2;
 }
 
+.fill-fail {
+   background-color: #ffcfc9 !important;
+}
+
+.fill-pass {
+   background-color: #d4edbc !important;
+}
+
+.link-btn {
+  color: black;
+  text-decoration: none;
+}
+
+
 tr:hover {
    background-color: #dddddd;
 }
@@ -67,6 +98,18 @@ th {
   text-align: left;
   background-color: #2286f4;
   color: white;
+}
+
+.table-pertest-summary th {
+    background-color: #220022;
+}
+
+.table-pertest-submissions th {
+    background-color: #222222;
+}
+
+.test-row-status {
+    vertical-align: top;
 }
 
 .fail {
@@ -114,7 +157,7 @@ th {
 .bar-grey   { background-color: #eeeeee; }
 
 .container {
-width: 800px;
+    width: 800px;
 }
 
 .test-summary {
@@ -376,14 +419,12 @@ class AllTestSummary(GSSummaryPass):
 
     <h2 id="flagged">Flagged submissions</h2>
     {{ #counts }}
-    {{ #submissions }}
     <h4>{{ name }} ({{ count }})</h4>
     <ul>
     {{ #submissions }}
     <li><a href="#results-{{ . }}">{{ . }}</a></li>
     {{ /submissions }}
     </ul>
-    {{ /submissions }}
     {{ /counts }}
     """
 
@@ -433,7 +474,7 @@ class AllTestSummary(GSSummaryPass):
 
 class PerTestSummary(GSSummaryPass):
 
-    TEMPLATE = """
+    TEMPLATE_ORIG = """
     <h1 id="per-test">Per-test summary</h1>
     {{ #tests }}
     <h2 id="test-{{name}}">{{name}}</h2>
@@ -453,10 +494,62 @@ class PerTestSummary(GSSummaryPass):
     {{ /tests }}
     """
 
+    TEMPLATE = """
+    <h1 id="per-test">Per-test summary</h1>
+
+    {{ #tests }}
+    <h2 id="test-{{ name }}">{{ name }}</h2>
+    <table class="table-pertest-summary">
+    <thead><tr>
+    <th>Test name</th><th>Passing</th><th>Failing</th><th>%</th>
+    </tr></thead>
+    <tbody>
+    <tr><td>{{ name }}</td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
+    </tbody>
+    </table>
+    <br /><br />
+    <table class="table-pertest-submissions">
+    <tr>
+    <th width="5%">S</th><th width="80%">Name</th><th>Score</th>
+    </tr>
+    {{ #t_failing }}
+    <tr class="row-fail">
+    <td class="test-row-status fill-fail">❌</td>
+    <td>
+      {{ name }}  <a href="#results-{{name}}" class="link-btn">🔍</a><br /><details class="test-output"><summary class="test-output">Output</summary>
+      <pre>
+      {{{ output }}}
+      </pre>
+      </details>
+    </td>
+    <td>{{{ score }}} {{{ percent }}}</td>
+    </tr>
+    {{ /t_failing }}
+    {{ #t_passing }}
+    <tr>
+    <td class="test-row-status fill-pass">✅</td>
+    <td>
+      {{ name }}<a href="#results-{{name}}" class="link-btn">🔍</a><br /><details class="test-output"><summary class="test-output">Output</summary>
+      <pre>
+      {{{ output }}}
+      </pre>
+      </details>
+    </td>
+    <td>{{{ score }}} {{{ percent }}}</td>
+    </tr>
+    {{ /t_passing }}
+    </tbody>
+    </table>
+    {{ /tests }}
+    """
+
     def __init__(self):
         pass
 
     def write(self, doc: GSSummary):
+        def _order(x: list[SubmissionTest], reverse=True):
+            return sorted(x, key=lambda x: x.result.results.get_total_passed(), reverse=reverse)
+
         to_render = {
             "tests": [
                 {
@@ -468,13 +561,17 @@ class PerTestSummary(GSSummaryPass):
                     "t_passing": [{
                         "name": t.name,
                         "score": t.t.get_score_str(),
+                        "percent": doc._make_bar(t.result.results.get_total_passed(),
+                                                 max=t.result.results.get_total_tests()),
                         "output": doc._prepare_output(t.t.get_output()),
-                    } for t in t_infos if t.is_passing()],
+                    } for t in _order(t_infos) if t.is_passing()],
                     "t_failing": [{
                         "name": t.name,
                         "score": t.t.get_score_str(),
                         "output": doc._prepare_output(t.t.get_output()),
-                    } for t in t_infos if not t.is_passing()],
+                        "percent": doc._make_bar(t.result.results.get_total_passed(),
+                                                 max=t.result.results.get_total_tests()),
+                    } for t in _order(t_infos) if not t.is_passing()],
                  } for t_name, t_infos in doc.test_map.items()
             ]
         }

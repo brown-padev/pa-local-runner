@@ -139,7 +139,7 @@ TEMPLATE_STUDENT_TEST = """
 </thead>
 <tbody>
 {{ #tests }}
-  <tr class="row-summary"><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
+  <tr><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
   <tr class="row-output"><td colspan="3"><details><summary>Output</summary>
   <pre>
   {{{ output }}}
@@ -171,16 +171,74 @@ class SubmissionResult():
     results: SResults
 
 
-class GSSummary():
+class SummaryDocument():
+
+    def __init__(self):
+        self._fd = None
+
+    @property
+    def fd(self):
+        if self._fd is None:
+            raise AttributeError("File descriptor not set")
+
+        return self._fd
+
+    def add_header(self):
+        pass
+
+    def add_footer(self):
+        pass
+
+    def get_passes(self):
+        raise NotImplementedError("subclass must implement")
+
+    def _render(self, template, data):
+        out = pystache.render(template, data)
+        self.fd.write(out)
+
+    def _write(self, data):
+        self.fd.write(data)
+
+    def do_summary(self, output_file: str):
+        with open(output_file, "w") as fd:
+            self._fd = fd
+            self.add_header()
+
+            passes = self.get_passes()
+            for p in passes:
+                p.write(self)
+
+            self.add_footer()
+
+class SummaryPass():
+
+    def __init__(self):
+        pass
+
+    def write(self, doc):
+        raise NotImplementedError("Subclass must implement")
+
+
+class GSSummary(SummaryDocument):
     result_map: dict[str, SubmissionResult]
     test_map: dict[str, list[SubmissionTest]]
     all_tests: set[str]
+    passes: list['GSSummaryPass']
 
     def __init__(self, run_id):
+        super(GSSummary, self).__init__()
+
         self.run_id = run_id
         self.result_map = {}
         self.test_map = defaultdict(list)
         self.all_tests = set()
+        self.passes = [
+            AllTestSummary(),
+            PerStudentResults(),
+        ]
+
+    def get_passes(self):
+        return self.passes
 
     def add(self, name, res: SResults):
         tests = res.get_tests()
@@ -201,19 +259,17 @@ class GSSummary():
             raise ValueError("Test not found:  {}".format(test_name))
         return self.test_map[test_name]
 
-    def _add_header(self, fd):
+    def add_header(self):
         styles = get_styles()
         styles_as_css = "\n".join([f"{x.klass} {{ {x.kw}  }}" for x in styles])
 
-        out = pystache.render(TEMPLATE_HEAD, {
+        self._render(TEMPLATE_HEAD, {
             "run_id": self.run_id,
             "styles": styles_as_css,
         })
-        fd.write(out)
 
-    def _add_footer(self, fd):
-        out = pystache.render(TEMPLATE_END, {"run_id": self.run_id})
-        fd.write(out)
+    def add_footer(self):
+        self._render(TEMPLATE_END, {"run_id": self.run_id})
 
     def _ffc(self, n, proc=lambda x: x != 0):
         return "<span class=\"fail\">{}</span>".format(n) if proc(n) else str(n)
@@ -231,88 +287,88 @@ class GSSummary():
         perc = round((count / total) * 100, figs)
         return "<div class=\"bar-outer\"><div class=\"bar-inner\" style=\"width:{}%\">{} %</div></div>".format(perc, perc)
 
-    def _add_summary_table(self, fd):
+
+class GSSummaryPass(SummaryPass):
+
+    def write(self, sd: GSSummary):
+        raise NotImplementedError("Subclass must implement")
+
+
+class AllTestSummary(GSSummaryPass):
+
+    def __init__(self):
+        pass
+
+    def write(self, doc: GSSummary):
         to_render = {
             "tests": [
                 {
                     "name": t_name,
                     "count_passing": len([t for t in t_infos if t.is_passing()]),
-                    "count_failing": self._ffc(len([t for t in t_infos if not t.is_passing()])),
-                    "percent": self._make_bar(len([t for t in t_infos if not t.is_passing()]),
+                    "count_failing": doc._ffc(len([t for t in t_infos if not t.is_passing()])),
+                    "percent": doc._make_bar(len([t for t in t_infos if not t.is_passing()]),
                                               len([t for t in t_infos])),
                     "t_passing": [{
                         "name": t.name,
                         "score": t.t.get_score_str(),
-                        "output": self._prepare_output(t.t.get_output()),
+                        "output": doc._prepare_output(t.t.get_output()),
                     } for t in t_infos if t.is_passing()],
                     "t_failing": [{
                         "name": t.name,
                         "score": t.t.get_score_str(),
-                        "output": self._prepare_output(t.t.get_output()),
+                        "output": doc._prepare_output(t.t.get_output()),
                     } for t in t_infos if not t.is_passing()],
-                 } for t_name, t_infos in self.test_map.items()
+                 } for t_name, t_infos in doc.test_map.items()
             ]
         }
-        out = pystache.render(TEMPLATE_SUMMARY, to_render)
-        fd.write(out)
+        doc._render(TEMPLATE_SUMMARY, to_render)
 
-    def _add_test_table(self, fd):
+class PerStudentResults(GSSummaryPass):
+
+    def __init__(self):
+        pass
+
+    def write(self, doc: GSSummary):
         to_render = {
             "results": [
                 {
                     "name": r_name,
                     "total": sr.results.get_total_tests(),
                     "passed": sr.results.get_total_passed(),
-                    "failed": self._ffc(sr.results.get_total_failed()),
+                    "failed": doc._ffc(sr.results.get_total_failed()),
                     "score": sr.results.get_score(),
                     "max_score": sr.results.get_max_score(),
                     "tests": [{
                         "name": t.get_name(),
-                        "status": self._ffs("PASS" if t.is_passing() else "FAIL"),
+                        "status": doc._ffs("PASS" if t.is_passing() else "FAIL"),
                         "score": t.get_score_str(),
-                        "output": self._prepare_output(t.get_output()),
+                        "output": doc._prepare_output(t.get_output()),
                     }
                               for t in sr.results.get_tests()]
-                } for r_name, sr in self.result_map.items()
+                } for r_name, sr in doc.result_map.items()
             ],
         }
         header = {}
-        self._render(TEMPLATE_STUDENT_HEAD, header)
+        doc._render(TEMPLATE_STUDENT_HEAD, header)
 
-        for r_name, sr in self.result_map.items():
+        for r_name, sr in doc.result_map.items():
             summary = {
                 "name": r_name,
                 "total": sr.results.get_total_tests(),
                 "passed": sr.results.get_total_passed(),
-                "failed": self._ffc(sr.results.get_total_failed()),
+                "failed": doc._ffc(sr.results.get_total_failed()),
                 "score": sr.results.get_score(),
                 "max_score": sr.results.get_max_score(),
             }
-            self._render(TEMPLATE_STUDENT_SUMMARY, summary)
+            doc._render(TEMPLATE_STUDENT_SUMMARY, summary)
 
             tests_to_print = [t for t in sr.results.get_tests() if not t.is_passing()]
             test_data = {
                 "tests": [{
                     "name": t.get_name(),
-                    "status": self._ffs("PASS" if t.is_passing() else "FAIL"),
+                    "status": doc._ffs("PASS" if t.is_passing() else "FAIL"),
                     "score": t.get_score_str(),
-                    "output": self._prepare_output(t.get_output()),
+                    "output": doc._prepare_output(t.get_output()),
                 } for t in tests_to_print],
             }
-            self._render(TEMPLATE_STUDENT_TEST, test_data)
-
-    def _render(self, template, data):
-        assert(self.fd)
-        out = pystache.render(template, data)
-        self.fd.write(out)
-
-    def _set_fd(self, fd):
-        self.fd = fd
-
-    def do_summary(self, output_file: str):
-        with open(output_file, "w") as fd:
-            self._set_fd(fd)
-            self._add_header(fd)
-            self._add_summary_table(fd)
-            self._add_test_table(fd)
-            self._add_footer(fd)
+            doc._render(TEMPLATE_STUDENT_TEST, test_data)

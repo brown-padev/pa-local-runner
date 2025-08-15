@@ -54,108 +54,58 @@ td {
     background-color: #eeeeee;
     border-radius: 1px;
     overflow: hidden;
+    border: 1px solid #2222;
     height: 1.2em;
-    width: 100%;
+    width: 150px;
+    position: relative;
 }
 
 .bar-inner {
     height: 100%;
     text-align: right;
     padding-right: 1px;
-    color: red;
     font-weight: bold;
     line-height: 1.2em;
-    white-space: no-wrap;
+}
+
+.bar-text {
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #212121;
+}
+
+.bar-green  { background-color: #4caf50; }
+.bar-yellow { background-color: #ffeb3b; }
+.bar-orange { background-color: #ff9800; }
+.bar-red    { background-color: #f44336; }
+.bar-grey   { background-color: #eeeeee; }
+
+.container {
+width: 800px;
+}
+
+.test-summary {
+     width: 100%;
 }
 
 {{{ styles }}}
 </style>
 </head>
 <body>
+<div class="container">
 """
 
 TEMPLATE_END = """
+</div>
 </body>
 </html>
 """
-
-TEMPLATE_SUMMARY = """
-<h1 id="summary">Test summary</h1>
-<table>
-<thead>
-<tr>
-<td>Test name</td><td>Passing</td><td>Failing</td><td>%</td>
-</tr>
-</thead>
-<tbody>
-{{ #tests }}
-  <tr><td><a href="#test-{{name}}">{{ name }}</a></td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
-{{ /tests }}
-</tbody>
-</table>
-
-<h1 id="per-test">Per-test summary</h1>
-{{ #tests }}
-<h2 id="test-{{name}}">{{name}}</h2>
-Passing ({{{count_passing}}}):
-<ul>
-{{ #t_passing }}
-<li><details><summary>{{ name }} {{score}}</summary><pre>{{{output}}}</pre></details></li>
-{{ /t_passing }}
-</ul>
-<br />
-Failing ({{{count_failing}}}):
-<ul>
-{{ #t_failing }}
-<li><details><summary>{{ name }} {{score}}</summary><pre>{{{output}}}</pre></details></li>
-{{ /t_failing }}
-</ul>
-{{ /tests }}
-"""
-
-TEMPLATE_STUDENT_HEAD = """
-<h1 id="results">Test results</h1>
-"""
-
-TEMPLATE_STUDENT_SUMMARY = """
-<h2 id="results-{{name}}">{{name}}</h2>
-<table>
-<tr><td>Total</td><td>{{total}}</td></tr>
-<tr><td>Passed</td><td>{{passed}}</td></tr>
-<tr><td>Failed</td><td class="fail">{{{failed}}}</td></tr>
-<tr><td>Score</td><td>{{score}}/{{max_score}}</td></tr>
-</table>
-<br />
-<br />
-"""
-
-TEMPLATE_STUDENT_TEST = """
-<h3 id="results-bytest-{{name}}">Per-test results</h3>
-<table>
-<thead>
-<tr>
-<td>Test name</td><td>Score</td><td>Status</td>
-</tr>
-</thead>
-<tbody>
-{{ #tests }}
-  <tr><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
-  <tr class="row-output"><td colspan="3"><details><summary>Output</summary>
-  <pre>
-  {{{ output }}}
-  </pre>
-  </details>
-  </td>
-  </tr>
-{{ /tests }}
-</tbody>
-</table>
-<br />
-<br />
-
-"""
-
-
 
 @dataclass
 class SubmissionTest():
@@ -236,6 +186,7 @@ class GSSummary(SummaryDocument):
             AllTestSummary(),
             PerStudentResults(),
         ]
+        self.style_blocks = []
 
     def get_passes(self):
         return self.passes
@@ -259,13 +210,19 @@ class GSSummary(SummaryDocument):
             raise ValueError("Test not found:  {}".format(test_name))
         return self.test_map[test_name]
 
-    def add_header(self):
+    def _add_style(self, block):
+        self.style_blocks.append(block)
+
+    def _add_ansi_styles(self):
         styles = get_styles()
         styles_as_css = "\n".join([f"{x.klass} {{ {x.kw}  }}" for x in styles])
+        self._add_style(styles_as_css)
 
+    def add_header(self):
+        all_styles = "\n".join(self.style_blocks)
         self._render(TEMPLATE_HEAD, {
             "run_id": self.run_id,
-            "styles": styles_as_css,
+            "styles": all_styles,
         })
 
     def add_footer(self):
@@ -283,9 +240,21 @@ class GSSummary(SummaryDocument):
         _output = conv.convert(c.ENDC + _output + c.ENDC, full=False)
         return _output
 
+    def _get_bar_color(self, val):
+        if val < 1:
+            return "bar-grey"
+        elif val < 70:
+            return "bar-red"
+        elif val < 80:
+            return "bar-orange"
+        elif val < 90:
+            return "bar-yellow"
+        else:
+            return "bar-green"
+
     def _make_bar(self, count, total, figs=1):
         perc = round((count / total) * 100, figs)
-        return "<div class=\"bar-outer\"><div class=\"bar-inner\" style=\"width:{}%\">{} %</div></div>".format(perc, perc)
+        return "<div class=\"bar-outer\"><div class=\"bar-inner {}\" style=\"width:{}%\"></div><div class=\"bar-text\">{} %</div></div>".format(self._get_bar_color(perc), perc, perc)
 
 
 class GSSummaryPass(SummaryPass):
@@ -295,6 +264,43 @@ class GSSummaryPass(SummaryPass):
 
 
 class AllTestSummary(GSSummaryPass):
+
+    STYLES = """
+    """
+
+    TEMPLATE_SUMMARY = """
+    <h1 id="summary">Test summary</h1>
+    <table class="test-summary">
+    <thead>
+    <tr>
+    <td>Test name</td><td>Passing</td><td>Failing</td><td>%</td>
+    </tr>
+    </thead>
+    <tbody>
+    {{ #tests }}
+    <tr><td><a href="#test-{{name}}">{{ name }}</a></td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
+    {{ /tests }}
+    </tbody>
+    </table>
+
+    <h1 id="per-test">Per-test summary</h1>
+    {{ #tests }}
+    <h2 id="test-{{name}}">{{name}}</h2>
+    Passing ({{{count_passing}}}):
+    <ul>
+    {{ #t_passing }}
+    <li><details><summary>{{ name }} {{score}}</summary><pre>{{{output}}}</pre></details></li>
+    {{ /t_passing }}
+    </ul>
+    <br />
+    Failing ({{{count_failing}}}):
+    <ul>
+    {{ #t_failing }}
+    <li><details><summary>{{ name }} {{score}}</summary><pre>{{{output}}}</pre></details></li>
+    {{ /t_failing }}
+    </ul>
+    {{ /tests }}
+    """
 
     def __init__(self):
         pass
@@ -306,7 +312,7 @@ class AllTestSummary(GSSummaryPass):
                     "name": t_name,
                     "count_passing": len([t for t in t_infos if t.is_passing()]),
                     "count_failing": doc._ffc(len([t for t in t_infos if not t.is_passing()])),
-                    "percent": doc._make_bar(len([t for t in t_infos if not t.is_passing()]),
+                    "percent": doc._make_bar(len([t for t in t_infos if t.is_passing()]),
                                               len([t for t in t_infos])),
                     "t_passing": [{
                         "name": t.name,
@@ -321,9 +327,51 @@ class AllTestSummary(GSSummaryPass):
                  } for t_name, t_infos in doc.test_map.items()
             ]
         }
-        doc._render(TEMPLATE_SUMMARY, to_render)
+        doc._render(self.TEMPLATE_SUMMARY, to_render)
 
 class PerStudentResults(GSSummaryPass):
+
+    TEMPLATE_STUDENT_HEAD = """
+    <h1 id="results">Test results</h1>
+    """
+
+    TEMPLATE_STUDENT_SUMMARY = """
+    <h2 id="results-{{name}}">{{name}}</h2>
+    <table>
+    <tr><td>Total</td><td>{{total}}</td></tr>
+    <tr><td>Passed</td><td>{{passed}}</td></tr>
+    <tr><td>Failed</td><td class="fail">{{{failed}}}</td></tr>
+    <tr><td>Score</td><td>{{score}}/{{max_score}}</td></tr>
+    </table>
+    <br />
+    <br />
+    """
+
+    TEMPLATE_STUDENT_TEST = """
+    <h3 id="results-bytest-{{name}}">Per-test results</h3>
+    <table>
+    <thead>
+    <tr>
+    <td>Test name</td><td>Score</td><td>Status</td>
+    </tr>
+    </thead>
+    <tbody>
+    {{ #tests }}
+    <tr><td>{{ name }}</td><td>{{ score }}</td><td>{{{ status }}}</td></tr>
+    <tr class="row-output"><td colspan="3"><details><summary>Output</summary>
+    <pre>
+    {{{ output }}}
+    </pre>
+    </details>
+    </td>
+    </tr>
+    {{ /tests }}
+    </tbody>
+    </table>
+    <br />
+    <br />
+
+    """
 
     def __init__(self):
         pass
@@ -349,7 +397,7 @@ class PerStudentResults(GSSummaryPass):
             ],
         }
         header = {}
-        doc._render(TEMPLATE_STUDENT_HEAD, header)
+        doc._render(self.TEMPLATE_STUDENT_HEAD, header)
 
         for r_name, sr in doc.result_map.items():
             summary = {
@@ -360,7 +408,7 @@ class PerStudentResults(GSSummaryPass):
                 "score": sr.results.get_score(),
                 "max_score": sr.results.get_max_score(),
             }
-            doc._render(TEMPLATE_STUDENT_SUMMARY, summary)
+            doc._render(self.TEMPLATE_STUDENT_SUMMARY, summary)
 
             tests_to_print = [t for t in sr.results.get_tests() if not t.is_passing()]
             test_data = {
@@ -371,4 +419,4 @@ class PerStudentResults(GSSummaryPass):
                     "output": doc._prepare_output(t.get_output()),
                 } for t in tests_to_print],
             }
-            doc._render(TEMPLATE_STUDENT_TEST, test_data)
+            doc._render(self.TEMPLATE_STUDENT_TEST, test_data)

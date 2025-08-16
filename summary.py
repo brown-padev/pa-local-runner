@@ -223,7 +223,6 @@ document.querySelectorAll('th').forEach(th => th.addEventListener('click', (() =
         .forEach(tr => table.appendChild(tr) );
 })));
 
-console.log("yo");
 </script>
 </body>
 </html>

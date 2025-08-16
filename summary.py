@@ -87,6 +87,11 @@ tr:nth-child(even) {
   text-decoration: none;
 }
 
+.link-btn-underline {
+  color: black;
+  text-decoration: underline;
+}
+
 
 tr:hover {
    background-color: #dddddd;
@@ -173,8 +178,26 @@ th {
     background-color: black;
 }
 
+th {
+  cursor: pointer;
+}
+
 {{{ styles }}}
 </style>
+<script type="text/javascript">
+function expandAllDetails(divId) {
+    section = document.getElementById(divId);
+    if (!section) {
+        console.log("Could not find a div named " + divId);
+        return;
+    }
+    section.querySelectorAll('details')
+    .forEach((e) => {(e.hasAttribute('open')) ?
+        e.removeAttribute('open') : e.setAttribute('open',true);
+        console.log(e.hasAttribute('open'))
+    })
+}
+</script>
 </head>
 <body>
 <div class="container">
@@ -183,6 +206,25 @@ th {
 
 TEMPLATE_END = """
 </div>
+<script type="text/javascript">
+// https://stackoverflow.com/questions/14267781/sorting-html-table-with-javascript
+
+const getCellValue = (tr, idx) => tr.children[idx].innerText || tr.children[idx].textContent;
+
+const comparer = (idx, asc) => (a, b) => ((v1, v2) =>
+    v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
+    )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+
+// do the work...
+document.querySelectorAll('th').forEach(th => th.addEventListener('click', (() => {
+    const table = th.closest('table');
+    Array.from(table.querySelectorAll('tr:nth-child(n+2)'))
+        .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
+        .forEach(tr => table.appendChild(tr) );
+})));
+
+console.log("yo");
+</script>
 </body>
 </html>
 """
@@ -390,31 +432,23 @@ class AllTestSummary(GSSummaryPass):
     TEMPLATE = """
     <h1 id="summary">Test summary</h1>
     <table id="counts">
-    <thead>
     <tr>
     <th>Category</th><th>Count</th><th>%</th>
     </tr>
-    </thead>
-    <tbody>
     {{ #counts }}
     <tr><td>{{ name }}</td><td>{{ count }}</td><td>{{{ percent }}}</td></tr>
     {{ /counts }}
-    </tbody>
     </table>
 
     <br />
     <br />
     <table id="test-summary">
-    <thead>
     <tr>
     <th>Test name</th><th>Passing</th><th>Failing</th><th>%</th>
     </tr>
-    </thead>
-    <tbody>
     {{ #tests }}
     <tr><td><a href="#test-{{name}}">{{ name }}</a></td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
     {{ /tests }}
-    </tbody>
     </table>
 
     <h2 id="flagged">Flagged submissions</h2>
@@ -477,6 +511,7 @@ class PerTestSummary(GSSummaryPass):
     TEMPLATE_ORIG = """
     <h1 id="per-test">Per-test summary</h1>
     {{ #tests }}
+    <div id="c-pertest-{{ name }}">
     <h2 id="test-{{name}}">{{name}}</h2>
     Passing ({{{count_passing}}}):
     <ul>
@@ -491,6 +526,7 @@ class PerTestSummary(GSSummaryPass):
     <li><details><summary>{{ name }} {{score}}</summary><pre>{{{output}}}</pre></details></li>
     {{ /t_failing }}
     </ul>
+    </div>
     {{ /tests }}
     """
 
@@ -500,14 +536,14 @@ class PerTestSummary(GSSummaryPass):
     {{ #tests }}
     <h2 id="test-{{ name }}">{{ name }}</h2>
     <table class="table-pertest-summary">
-    <thead><tr>
+    <tr>
     <th>Test name</th><th>Passing</th><th>Failing</th><th>%</th>
-    </tr></thead>
-    <tbody>
+    </tr>
     <tr><td>{{ name }}</td><td>{{ count_passing }}</td><td>{{{ count_failing }}}</td><td>{{{ percent }}}</td></tr>
-    </tbody>
     </table>
     <br /><br />
+    <div id="c-pertest-{{ name }}">
+    <a href="javascript:;" onclick="expandAllDetails('c-pertest-{{name}}');" class="link-btn-underline">[Show/hide output]</a>
     <table class="table-pertest-submissions">
     <tr>
     <th width="5%">S</th><th width="80%">Name</th><th>Score</th>
@@ -538,8 +574,8 @@ class PerTestSummary(GSSummaryPass):
     <td>{{{ score }}} {{{ percent }}}</td>
     </tr>
     {{ /t_passing }}
-    </tbody>
     </table>
+    </div>
     {{ /tests }}
     """
 
@@ -598,13 +634,12 @@ class PerStudentResults(GSSummaryPass):
 
     TEMPLATE_STUDENT_TEST = """
     <h3 id="results-bytest-{{name}}">Per-test results</h3>
+    <div id="c-perstudent-{{ name }}">
+    <a href="javascript:;" onclick="expandAllDetails('c-perstudent-{{ name }}');" class="link-btn-underline">[Show/hide output]</a>
     <table>
-    <thead>
     <tr>
     <th>Test</th><th width="15%">Score</td><th width="15%">Status</td>
     </tr>
-    </thead>
-    <tbody>
     {{ #tests }}
     <tr><td>{{ name }} <br /><details class="test-output"><summary class="test-output">Output</summary>
     <pre>
@@ -614,8 +649,8 @@ class PerStudentResults(GSSummaryPass):
     </td>
     <td>{{ score }}</td><td>{{{ status }}}</td></tr>
     {{ /tests }}
-    </tbody>
     </table>
+    </div>
     <br />
     <br />
 
@@ -648,7 +683,7 @@ class PerStudentResults(GSSummaryPass):
         doc._render(self.TEMPLATE_STUDENT_HEAD, header)
 
         for r_name, sr in doc.result_map.items():
-            summary = {
+            d = {
                 "name": r_name,
                 "total": sr.results.get_total_tests(),
                 "passed": sr.results.get_total_passed(),
@@ -656,7 +691,7 @@ class PerStudentResults(GSSummaryPass):
                 "score": sr.results.get_score(),
                 "max_score": sr.results.get_max_score(),
             }
-            doc._render(self.TEMPLATE_STUDENT_SUMMARY, summary)
+            doc._render(self.TEMPLATE_STUDENT_SUMMARY, d)
 
             tests_to_print = [t for t in sr.results.get_tests()]
             test_data = {
@@ -667,4 +702,5 @@ class PerStudentResults(GSSummaryPass):
                     "output": doc._prepare_output(t.get_output()),
                 } for t in tests_to_print],
             }
-            doc._render(self.TEMPLATE_STUDENT_TEST, test_data)
+            d.update(test_data)
+            doc._render(self.TEMPLATE_STUDENT_TEST, d)

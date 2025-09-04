@@ -141,9 +141,9 @@ class PATestEntry(CTRFTest):
 
     def __init__(self, name="", output="", status="",
                  output_format="text", visibility="visible",
-                 suite=None,
+                 suite=None, extra=None,
                  duration=0, tags=None):
-        super(PATestEntry, self).__init__(name, status, suite=suite)
+        super(PATestEntry, self).__init__(name, status, suite=suite, extra=extra)
         self.output = output
         self.output_format = output_format
         self.visibility = visibility
@@ -349,13 +349,15 @@ class PAResults(CTRFResults):
         grades = {k: PaGradeEntry.from_json(v) for k, v in _grades.items()} \
             if _grades is not None else None
         notes = _get(json_data, "notes", None, default_none=True)
+        extra = _get(json_data, "extra", dict())
         tests = [PATestEntry.from_basic_json(t, suite=suite) for t in _tests]
 
         return PAResults(_exec_time,
                          tests=tests,
                          suite=suite,
                          grades=grades,
-                         notes=notes)
+                         notes=notes,
+                         extra=extra)
     @classmethod
     def from_runner_json_file(cls, json_file, suite=None):
         with open(json_file, "r") as fd:

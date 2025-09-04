@@ -394,10 +394,11 @@ def main(input_args):
 
     if needs_summary:
         search_path = config.results_path
-        if len(args.results_dir) == 1:
-            search_path = pathlib.Path(args.results_dir).resolve()
-        elif len(args.results_dir) > 1:
-            raise NotImplementedError("TODO")
+        # if args.results_dir:
+        #     if len(args.results_dir) == 1:
+        #         search_path = pathlib.Path(args.results_dir).resolve()
+        #     elif len(args.results_dir) > 1:
+        #         raise NotImplementedError("TODO")
 
         if not needs_run:
             for fp in search_path.glob("*.json"):

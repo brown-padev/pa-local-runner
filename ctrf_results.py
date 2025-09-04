@@ -51,6 +51,7 @@ class CTRFTest(STest):
                  status: str,
                  duration: int=0,
                  suite: str|None = None,
+                 extra: dict|None = None,
                  **kwargs):
 
         super(STest, self).__init__()
@@ -59,7 +60,7 @@ class CTRFTest(STest):
         self.duration = duration
         self.suite = suite
         self.tags = []
-        self.extra = dict()
+        self.extra = extra if extra is not None else dict()
         self.extra.update(kwargs)
 
     def get_name(self):
@@ -177,12 +178,13 @@ class CTRFResults(SResults):
     extra: dict
 
     def __init__(self, report_format="CTRF", version="0.0.0",
-                 tool: CTRFTool|None = None):
+                 tool: CTRFTool|None = None,
+                 extra: dict|None = None):
         super(CTRFResults, self).__init__()
         self.report_format = report_format
         self.version = version
         self.tool = CTRFTool() if tool is None else tool
-        self.extra = dict()
+        self.extra = dict() if extra is None else extra
 
     def get_tests(self):
         raise NotImplementedError("Subclass must implement")
@@ -214,9 +216,11 @@ class CTRFResults(SResults):
             kw[k_arg if k_arg else k] = d[k]
 
     @classmethod
-    def _add_from_extra(cls, kw, d, k):
+    def _add_from_extra(cls, kw, d, k, remove=True):
         if "extra" in d and k in d["extra"]:
             kw[k] = d["extra"][k]
+            if remove:
+                del d["extra"][k]
 
     @classmethod
     def _get(cls, d, k):
@@ -264,6 +268,7 @@ class CTRFResults(SResults):
             "tool": self.tool.to_json(),
             "tests": [t.to_ctrf() for t in self.get_tests()],
             "summary": self._make_summary(),
+            "extra": self.extra,
         }
         return ret
 
@@ -301,6 +306,11 @@ class CTRFResults(SResults):
         kwargs["tool"] = tool
 
         cls.add_from_ctrf(d, kwargs)
+
+        _results = cls._get(d, "results")
+        if "extra" in _results:
+            _extra = cls._get(_results, "extra")
+            kwargs["extra"] = _extra
 
         return cls(**kwargs)
 

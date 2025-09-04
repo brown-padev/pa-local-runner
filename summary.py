@@ -3,6 +3,7 @@ import sys
 import json
 import html
 import pathlib
+import secrets
 import argparse
 import subprocess
 
@@ -289,6 +290,67 @@ class SummaryPass():
 
     def write(self, doc):
         raise NotImplementedError("Subclass must implement")
+
+
+class Container():
+
+    def __init__(self, id=None, summary=None, fd=None,
+                 classes: list[str]|None=None, level=0, **kwargs):
+        self.id = id if id is not None else self._rand_id()
+        self.summary = summary
+        self.fd = fd
+        self.class_list = classes if classes is not None else list()
+        self.level = level
+
+    def create(self, instance):
+        if isinstance(instance, Section):
+            instance.set_level(self.level + 1)
+
+        instance._setup(self.fd, self.summary)
+        return instance
+
+    def _rand_id(self):
+        return secrets.token_bytes(4).hex()
+
+    def _setup(self, fd, summary):
+        assert(fd is not None)
+        assert(summary is not None)
+
+        self.fd = fd
+        self.summary = summary
+
+    def _write(self, content):
+        assert(self.fd is not None)
+        self.fd.write(content)
+
+    def append(self, *args, **kwargs):
+        out = pystache.render(*args, **kwargs)
+        self._write(out)
+
+    def __enter__(self):
+        self._write("<div id="" class=\"{}\">".format(self.id, " ".join(self.class_list)))
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._write("</div>")
+
+
+class Section(Container):
+
+    def __init__(self, title, level=0):
+        super(Section, self).__init__(level=level)
+        self.title = title
+
+    def set_level(self, level):
+        if self.level == 0:
+            self.level = level
+
+    def __enter__(self):
+        self._write("<h{}>{}</h{}>".format(self.level, self.title, self.level))
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
 
 
 class GSSummary(SummaryDocument):

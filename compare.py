@@ -55,8 +55,8 @@ class TestCompareEntry(CTRFTest):
         d["stdout"] = self.output.split("\n")
         d["message"] = self.reason.value
 
-        self.add_extra_item("result_actual", self.t_actual.to_ctrf())
-        self.add_extra_item("result_expected", self.t_expected.to_ctrf())
+        self.add_extra_item("result_actual", self.t_actual.to_ctrf() if self.t_actual is not None else None)
+        self.add_extra_item("result_expected", self.t_expected.to_ctrf() if self.t_expected is not None else None)
 
     @classmethod
     def add_from_ctrf(cls, d, kw):
@@ -99,32 +99,38 @@ class TestCompareEntry(CTRFTest):
         def _out(prefix, output):
             return "{}\n```\n{}\n```".format(prefix, output)
 
+        assert((t_actual is not None)  or (t_expected is not None))
+        test_name: str = None
+
         if t_actual is None:
             assert(t_expected is not None)
+            test_name = t_expected.name
             reason = CompareTestStatus.MISSING
             output = _out("Expected test not found in expected results.  Expected output:", t_expected.output)
         elif t_expected is None:
             assert(t_actual is not None)
+            test_name = t_actual.name
             reason = CompareTestStatus.EXTRA
-            output = _out("Extra test found not in expected results.  Output:", t_expected.output)
-
-        assert(t_actual is not None)
-        assert(t_expected is not None)
-
-        if t_actual.status != t_expected.status:
-            reason = CompareTestStatus.RESULT_MISMATCH
-            _comp = cls._make_output(t_actual.output, t_expected.output)
-            output = "Expected test status '{}' but was '{}`\n{}".format(t_expected.status, t_actual.status, _comp)
-        # elif t_actual.output != t_expected.output:
-        #     reason = CompareTestStatus.OUTPUT_MISMATCH
-        #     _comp = cls._make_output(t_actual.output, t_expected.output)
-        #     output = "Test outputs differ significantly\n{}".format(t_expected.status, t_actual.status, _comp)
+            output = _out("Extra test found not in expected results.  Output:", t_actual.output)
         else:
-            reason = CompareTestStatus.OK
-            output = t_actual.output
+            assert(t_actual is not None)
+            assert(t_expected is not None)
+            test_name = t_actual.name
+
+            if t_actual.status != t_expected.status:
+                reason = CompareTestStatus.RESULT_MISMATCH
+                _comp = cls._make_output(t_actual.output, t_expected.output)
+                output = "Expected test status '{}' but was '{}`\n{}".format(t_expected.status, t_actual.status, _comp)
+            # elif t_actual.output != t_expected.output:
+            #     reason = CompareTestStatus.OUTPUT_MISMATCH
+            #     _comp = cls._make_output(t_actual.output, t_expected.output)
+            #     output = "Test outputs differ significantly\n{}".format(t_expected.status, t_actual.status, _comp)
+            else:
+                reason = CompareTestStatus.OK
+                output = t_actual.output
 
         status = STATUS_PASS if (reason == CompareTestStatus.OK) else STATUS_FAIL
-        return cls(name=t_actual.name,
+        return cls(name=test_name,
                    status=status,
                    reason=reason,
                    output=output,

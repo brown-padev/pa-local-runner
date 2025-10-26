@@ -489,7 +489,9 @@ def main(input_args):
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--no-cleanup", action="store_true", default=False)
     parser.add_argument("--submission-is-repo", action="store_true", default=False)
-    parser.add_argument("--skip-expected", action="store_true", default=False)
+    #parser.add_argument("--skip-expected", action="store_true", default=False)
+    parser.add_argument("--check-expected", action="store_true", default=False)
+    parser.add_argument("--expect-all-fail", action="store_true", default=False)
     parser.add_argument("--expected-file", type=str, default=None,
                         help="Expected test.json file")
     parser.add_argument("--save-expected", action="store_true", default=False)
@@ -533,6 +535,7 @@ def main(input_args):
     work_dir = _setup_dir(args.work_dir)
     output_dir = _setup_dir(args.output_dir)
     expected_results = pathlib.Path(args.expected_file) if args.expected_file else None
+    use_expected = args.check_expected or (expected_results is not None)
 
     run = RunInstance(suite_name, config, submission_path,
                       work_dir=work_dir,
@@ -550,7 +553,7 @@ def main(input_args):
         results, run_ok = run.run_checkoff(command)
         results.show()
 
-        expected_file = run.get_expected_file(command)
+        expected_file = expected_results if expected_results is not None else run.get_expected_file(command)
 
         if save_expected:
             msg("Writing results to expected file {}".format(_prels(expected_file)),
@@ -567,20 +570,24 @@ def main(input_args):
                            JSON_RESULTS_DEFAULT, _prels(expected_file)))
 
         skip_reason = None
-        use_expected = True
         cr: CompareResult|None = None
         expected_ok = False
 
-        if args.skip_expected:
-            print_status("check_expected", "Expected results check skipped based on command-line arguments")
-            skip_reason = "Disabled by command line"
-            use_expected = False
+        # if args.skip_expected:
+        #     print_status("check_expected", "Expected results check skipped based on command-line arguments")
+        #     skip_reason = "Disabled by command line"
+        #     use_expected = False
 
-        print("Attempting to use expected results at {}".format(_prels(expected_file)))
-        if not expected_file.exists():
-            print_status("check_expected", "No expected results found, skipping check")
-            skip_reason = "No baseline results found"
-            use_expected = False
+
+        if args.check_expected:
+            if expected_file.exists():
+                print("Attempting to use expected results at {}".format(_prels(expected_file)))
+                use_expected = True
+            else:
+                print(" expected results at {}".format(_prels(expected_file)))
+                print_status("check_expected", "No expected results found, skipping check")
+                skip_reason = "No baseline results found"
+                use_expected = False
 
         if use_expected:
             cr = CompareResult.from_files(run.runner_json, expected_file, suite=suite_name)
@@ -594,19 +601,25 @@ def main(input_args):
 
         msg("\n++++++++++++++++++++++ PA_RUN SUMMARY ++++++++++++++++++++++", color=c.OKCYAN)
         results.show()
-        if cr is not None:
+        if use_expected and cr is not None:
             cr.print_summary(summary_only=True)
             cr.write_json(compare_results)
+
+        ok = False
+
+        if use_expected:
+            ok = cr.is_passing()
+        elif args.expect_all_fail:
+            ok = results.has_tests() and results.is_all_failing()
         else:
-            print("=== Check expected results ===\n\tSkipped ({})".format(skip_reason))
+            ok = results.has_tests() and results.is_all_passing()
 
-
-        ok = cr.is_passing() if use_expected else results.is_passing()
         if not results.has_tests():
             print("\nOverall result: {}{}{} (no JSON-based test data present)".format(c.WARNING, "UNKNOWN", c.ENDC))
         else:
-            print("\nOverall result:  {}"
-                  .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL)))
+            print("\nOverall result:  {} {}"
+                  .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL),
+                          "(all test failures expected)" if args.expect_all_fail else ""))
             if use_expected and (not cr.is_passing()):
                 _print_set_expected()
 

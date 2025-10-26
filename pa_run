@@ -492,6 +492,7 @@ def main(input_args):
     #parser.add_argument("--skip-expected", action="store_true", default=False)
     parser.add_argument("--check-expected", action="store_true", default=False)
     parser.add_argument("--expect-all-fail", action="store_true", default=False)
+    parser.add_argument("--expect-any", action="store_true", default=False)
     parser.add_argument("--expected-file", type=str, default=None,
                         help="Expected test.json file")
     parser.add_argument("--save-expected", action="store_true", default=False)
@@ -611,15 +612,22 @@ def main(input_args):
             ok = cr.is_passing()
         elif args.expect_all_fail:
             ok = results.has_tests() and results.is_all_failing()
+        elif args.expect_any:
+            ok = results.has_tests()
         else:
             ok = results.has_tests() and results.is_all_passing()
 
         if not results.has_tests():
             print("\nOverall result: {}{}{} (no JSON-based test data present)".format(c.WARNING, "UNKNOWN", c.ENDC))
         else:
-            print("\nOverall result:  {} {}"
-                  .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL),
-                          "(all test failures expected)" if args.expect_all_fail else ""))
+            if args.expect_any:
+                print("\nOverall result:  {} {}"
+                      .format(c.color("UNKNOWN", c.WARNING) if ok else c.color("FAIL", c.FAIL),
+                              "(pass/fail check disabled)"))
+            else:
+                print("\nOverall result:  {} {}"
+                      .format(c.color("PASS", c.OKGREEN) if ok else c.color("FAIL", c.FAIL),
+                              "(all test failures expected)" if args.expect_all_fail else ""))
             if use_expected and (not cr.is_passing()):
                 _print_set_expected()
 

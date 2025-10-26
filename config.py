@@ -71,6 +71,7 @@ class RepoConfig():
     list_file: pathlib.Path | None = None
     pattern: str = "*"
     github_org: str = ""
+    time: str = ""
     source: RunSource = RunSource.DISK
 
 @dataclass(frozen=False)

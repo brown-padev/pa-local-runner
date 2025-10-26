@@ -388,7 +388,7 @@ class GSSummary(SummaryDocument):
     def get_passes(self):
         return self.passes
 
-    def add(self, name, res: SResults):
+    def add(self, name: str, res: SResults):
         tests = res.get_tests()
         test_names = [t.name for t in tests]
         self.all_tests.update(test_names)
@@ -564,7 +564,6 @@ class AllTestSummary(GSSummaryPass):
         _add("Total submissions", None, count=doc.total_submissions_with_failing())
 
         to_render["counts"] = count_info
-
         doc._render(self.TEMPLATE, to_render)
 
 class PerTestSummary(GSSummaryPass):

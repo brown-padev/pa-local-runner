@@ -90,7 +90,15 @@ def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=
             sys.stdout.buffer.write(line)
             log_fd.write(line)
 
-    proc.wait()
+    try:
+        proc.wait(timeout=300)
+    except subprocess.TimeoutExpired as e:
+        if log_fd is not None:
+            log_fd.flush()
+            msg = b"[Timed out]\n"
+            log_fd.write(msg)
+            sys.stdout.buffer.write(msg)
+
     if log_fd is not None:
         log_fd.close()
 
@@ -188,7 +196,7 @@ class DiskRepo(Repo):
     def name(self):
         return self.path.stem
 
-    def setup(self, target_dir: pathlib.Path):
+    def setup(self, target_dir: pathlib.Path, config: RunConfig|None=None):
         do_exec(f"cp -pTRv {str(self.path)} {str(target_dir)}")
 
 class GitRepo(Repo):
@@ -204,9 +212,20 @@ class GitRepo(Repo):
     def name(self):
         return self.url.name
 
-    def setup(self, target_dir: pathlib.Path):
+    def setup(self, target_dir: pathlib.Path, config: RunConfig|None=None):
         do_exec(f"git clone {str(self.url.get_ssh())} {str(target_dir)}")
 
+        if config and config.repos.time:
+            t = config.repos.time
+            cwd = str(target_dir)
+            current_branch = do_exec("git rev-parse --abbrev-ref HEAD", cwd=cwd)
+            last_commit = do_exec(f"git rev-list -n 1 --before=\"{t}\" \"{current_branch}\"", cwd=cwd)
+            if not last_commit:
+                print("Warning:  no valid commit found before due date, getting latest commit instead")
+                return
+
+            do_exec(f"git tag submit {last_commit}", cwd=cwd)
+            do_exec(f"git checkout submit", cwd=cwd)
 
 class RepoList():
     repo_path: pathlib.Path
@@ -386,7 +405,7 @@ def main(input_args):
                 print("Found results at {}".format(results_file))
                 results = ResultLoader.load_results(result_type, results_file)
                 results.show(descr_on_fail=True, descr_on_pass=False)
-                summary.add(repo.name, results)
+                summary.add(repo.name(), results)
 
             if result_type == ResultType.NONE:
                 print("Runner did not produce results, not generating summary")

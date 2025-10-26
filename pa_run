@@ -176,6 +176,7 @@ def do_exec(cmd, check=True, shell=True, cwd=None, return_rv=False):
         do_exit(f"Command exited with {proc.returncode}:  {proc.stdout}")
 
     output = proc.stdout
+
     if return_rv:
         return output, proc.returncode
     else:
@@ -339,9 +340,11 @@ class RunInstance():
             import pdb; pdb.set_trace()
             raise ValueError("YO")
 
-        interactive = runner.is_interactive()
+        #interactive = runner.is_interactive()
+        interactive = False
         proc = do_exec_live(runner.command, str(self.log_file), shell=True,
                             cwd=str(self.work_path), attach=interactive)
+
         rv = proc.returncode
         if rv != 0 or VERBOSE_MODE:
             msg("Runner exited with status {}".format(rv))

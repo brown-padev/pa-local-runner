@@ -32,7 +32,7 @@ def _get(d, k, default=None, default_none=False):
 @dataclass(init=False)
 class PaGradeEntry():
     title: str
-    max: int
+    max: int = 0
     hidden: bool = False
     no_total: bool = False
     max_visible: bool = False

@@ -491,6 +491,7 @@ def main(input_args):
     parser.add_argument("--submission-is-repo", action="store_true", default=False)
     #parser.add_argument("--skip-expected", action="store_true", default=False)
     parser.add_argument("--run-only", action="store_true", default=False)
+    parser.add_argument("--run-expect-rv", type=int, default=0)
     parser.add_argument("--check-expected", action="store_true", default=False)
     parser.add_argument("--expect-all-fail", action="store_true", default=False)
     parser.add_argument("--expect-any", action="store_true", default=False)
@@ -616,7 +617,7 @@ def main(input_args):
         elif args.expect_any:
             ok = results.has_tests()
         elif args.run_only:
-            ok = (results.runner_rv == 0)
+            ok = (results.runner_rv == args.run_expect_rv)
         else:
             ok = results.has_tests() and results.is_all_passing()
 

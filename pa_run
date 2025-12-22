@@ -73,6 +73,7 @@ class RunConfig():
     expected_dir: pathlib.Path
     _pa_config: PaConfig
     use_overlay: bool
+    pset: str | None
     pset_config: pathlib.Path | None
     grading_script: pathlib.Path | None
 
@@ -81,6 +82,7 @@ class RunConfig():
     def __init__(self,
                  grading_dir,
                  target_dir=".",
+                 pset=None,
                  expected_dir=None,
                  overlay_dir=None,
                  use_overlay=True,
@@ -89,6 +91,7 @@ class RunConfig():
 
         self.grading_dir = pathlib.Path(grading_dir).resolve()
         self.target_dir = pathlib.Path(target_dir)
+        self.pset = pset
 
         def _rp(val, default):
             return pathlib.Path(val).resolve() if val is not None else default
@@ -99,10 +102,7 @@ class RunConfig():
 
         self.pset_config = pset_config
 
-        if self.pset_config is None:
-            self.pset_config = self.grading_dir / "config.json"
-
-        self._pa_config = PaConfig.from_json_file(self.pset_config)
+        self._try_find_pset_config()
 
         self.grading_script = grading_script
         if self.grading_script is None:
@@ -110,6 +110,32 @@ class RunConfig():
             if _grading_script.exists():
                 self.grading_script = _grading_script
 
+    def _try_find_pset_config(self):
+        if self.pset_config is None:
+            matching_configs = [p for p in self.grading_dir.glob("config*.json")]
+            if len(matching_configs) == 0:
+                pass
+            elif len(matching_configs) == 1:
+                self.pset_config = matching_configs[0]
+            else:
+                def _get_pset(f):
+                    with open(f, "r") as fd:
+                        jd = json.load(fd)
+                        if "key" not in jd:
+                            raise ValueError(f"Config file {f} missing 'key' parameter to identify pset")
+                        return jd["key"]
+
+                pset_map = {_get_pset(f): f for f in matching_configs}
+                if (self.pset is not None) and self.pset in pset_map:
+                    self.pset_config = pset_map[self.pset]
+                else:
+                    _to_print = "\n".join(["\t{} => {}".format(k, v) for k, v in pset_map.items()])
+                    raise ValueError(f"Multiple pset configs found in this directory, use --pset to specify a pset to run\nAvailable psets:\n{_to_print}")
+
+        if self.pset_config is not None:
+            self._pa_config = PaConfig.from_json_file(self.pset_config)
+        else:
+            raise ValueError(f"Unable to find pset config in {str(self.grading_dir)}")
 
     def all_commands(self) -> list[str]:
         return list(self._pa_config.runners.keys())
@@ -124,11 +150,14 @@ class RunConfig():
         return self._pa_config.runners[command]
 
     @classmethod
-    def load_from_file(cls, config_file):
+    def load_from_file(cls, config_file, pset=None):
         with open(config_file, "r") as json_fd:
             jd = json.load(json_fd)
+            if pset is not None:
+                jd["pset"] = pset
+
             if "grading_dir" not in jd:
-                raise ValueError("PA run config founr at {} does not contain `grading_dir`  attribute".format(config_file))
+                raise ValueError("PA run config found at {} does not contain `grading_dir`  attribute".format(config_file))
             _grading_dir = pathlib.Path(jd["grading_dir"])
             if not _grading_dir.is_absolute():
                 _grading_dir = (pathlib.Path(config_file).parent / _grading_dir).resolve()
@@ -137,16 +166,16 @@ class RunConfig():
             return RunConfig(**jd)
 
     @classmethod
-    def load_config(cls, start_dir="."):
+    def load_config(cls, start_dir=".", pset=None):
         dir_to_check = pathlib.Path(start_dir).resolve()
         if dir_to_check.is_file():
-            return cls.load_from_file(str(dir_to_check))
+            return cls.load_from_file(str(dir_to_check), pset=pset)
 
         config = None
         while True:
             config_path = dir_to_check / cls.CONFIG_NAME
             if config_path.exists():
-                config = cls.load_from_file(config_path)
+                config = cls.load_from_file(config_path, pset=pset)
             dir_to_check = dir_to_check.parent
             if str(dir_to_check) == dir_to_check.root:
                 break
@@ -483,6 +512,7 @@ def main(input_args):
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--run-config", type=str, default=None)
+    parser.add_argument("--pset", type=str, default=None)
     parser.add_argument("--suite", type=str, default=None)
     parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--work-dir", type=str, default=None)
@@ -504,9 +534,10 @@ def main(input_args):
 
     args = parser.parse_args(input_args)
 
+    pset = args.pset
     submission_path = pathlib.Path(args.submission_dir).resolve()
     start_dir = args.run_config if args.run_config is not None else submission_path
-    config = RunConfig.load_config(start_dir)
+    config = RunConfig.load_config(start_dir, pset=pset)
     suite_name = args.suite if args.suite is not None else submission_path.stem
 
     if args.verbose:

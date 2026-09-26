@@ -71,6 +71,8 @@ class GSTest(STest):
     def is_passing(self):
         if self.status != "":
             return self.status == STATUS_PASS
+        elif self.score == 0 and self.max_score == 0:
+            return False
         else:
             return self.score == self.max_score
 

@@ -11,6 +11,7 @@ import secrets
 import tempfile
 import importlib
 import argparse
+import threading
 import subprocess
 
 from dataclasses import dataclass, field
@@ -32,6 +33,10 @@ VERBOSE_MODE = True
 SCRIPT_PATH = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
 RUNNING_PGID = None
 ABORT = False
+INTERRUPTED = False
+
+# How long to wait for a process group to die after SIGTERM before SIGKILLing it.
+KILL_GRACE_SEC = 2.0
 
 from result_types import ResultLoader, ResultType
 
@@ -40,14 +45,82 @@ from config import ExistMode, RunSource, RunConfig, \
     RepoConfig, RunStep
 
 
+def _kill_group(pgid, leader=None, grace=KILL_GRACE_SEC):
+    """Terminate every process in `pgid`:  SIGTERM, then SIGKILL if needed.
+
+    `leader` is the Popen for the group leader, if we have it;  it gets reaped
+    between the two signals (see below).  Never raises -- a group that is
+    already gone is the common case, not an error.
+    """
+    if pgid is None:
+        return
+
+    # Safety net.  If we ever compute a PGID wrong, we must not take down the
+    # grader (and the operator's shell) along with the student's processes.
+    if pgid == os.getpgrp():
+        print(f"Refusing to kill own process group (PGID {pgid})")
+        return
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return                      # nothing left in the group
+
+        # Reap the leader before probing:  an unreaped zombie still counts as a
+        # member of the group, so killpg(pgid, 0) below would never report the
+        # group as gone and we would always burn the full grace period.
+        if leader is not None:
+            try:
+                leader.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)      # probe:  does anyone still exist?
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+
+
+def _reclaim_tty():
+    """Make our own process group the terminal's foreground group again.
+
+    After an attached child exits, the terminal still points at the (now dead)
+    child's group.  Without this, the next read from the tty -- e.g. the
+    interrupt prompt in main() -- would stop us with SIGTTIN.
+    """
+    try:
+        tty = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return                          # no controlling terminal
+    try:
+        # We are a background group at this point, so tcsetpgrp would SIGTTOU us.
+        hdlr = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        os.tcsetpgrp(tty, os.getpgrp())
+        signal.signal(signal.SIGTTOU, hdlr)
+    except OSError:
+        pass
+    finally:
+        os.close(tty)
+
+
 def _sigint_handler(sig, frame):
     global RUNNING_PGID
     global ABORT
 
+    # This only fires for a SIGINT delivered while *we* are the foreground group
+    # -- i.e. between students, during clone/copy/summary.  A Ctrl-C during an
+    # attached student step goes to the child's group instead and is detected
+    # from its exit status in RepoRunner.do_run().
     if RUNNING_PGID is not None:
         print(f"Ending currently running test (PGID {RUNNING_PGID})...")
-        os.killpg(RUNNING_PGID, signal.SIGTERM)
-        ABORT = True
+        _kill_group(RUNNING_PGID)
+
+    # There is no current student to skip here, so stop the whole run.
+    ABORT = True
 
 
 def do_exec(cmd, check=True, shell=True, cwd=None, return_rv=False):
@@ -68,6 +141,13 @@ def do_exec(cmd, check=True, shell=True, cwd=None, return_rv=False):
     else:
         return output
 
+def _drain(pipe, log_fd):
+    """Copy a child's output to both our stdout and the step log, until EOF."""
+    for line in pipe:
+        sys.stdout.buffer.write(line)
+        log_fd.write(line)
+
+
 def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=None):
     global VERBOSE_MODE
     global RUNNING_PGID
@@ -76,13 +156,15 @@ def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=
         print("Executing:  {}".format(" ".join(cmd) if isinstance(cmd, list) else cmd))
 
     def _become_tty_fg():
-        global RUNNING_PGID
-        os.setpgrp()
+        # The child is already the leader of its own process group here:
+        # process_group=0 below is applied by CPython before preexec_fn runs.
         hdlr = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
         tty = os.open("/dev/tty", os.O_RDWR)
-        os.tcsetpgrp(tty, os.getpgrp())
+        try:
+            os.tcsetpgrp(tty, os.getpgrp())
+        finally:
+            os.close(tty)
         signal.signal(signal.SIGTTOU, hdlr)
-        signal.signal(signal.SIGINT, _sigint_handler)
 
     if (log_file is None) and (not attach):
         raise ValueError("Log file must be defined for non-interactive process")
@@ -98,28 +180,53 @@ def do_exec_live(cmd, log_file=None, shell=True, check=False, attach=False, cwd=
         kwargs["stderr"] = subprocess.STDOUT
         kwargs["bufsize"] = 128
 
+    # process_group=0 puts the child in a brand new process group whose PGID
+    # equals its PID, so we know the PGID without asking the kernel.  Calling
+    # os.getpgid(proc.pid) here would race the child's setpgid() and could
+    # hand back *our* PGID, pointing the kill below at the grader itself.
     proc = subprocess.Popen(cmd_to_run, shell=shell, cwd=cwd,
-                            **kwargs)
-    RUNNING_PGID = os.getpgid(proc.pid)
+                            process_group=0, **kwargs)
+    pgid = proc.pid
+    RUNNING_PGID = pgid
 
-    if (not attach):
-        for line in proc.stdout:
-            sys.stdout.buffer.write(line)
-            log_fd.write(line)
+    timed_out = False
+    reader = None
 
     try:
-        proc.wait(timeout=300)
-    except subprocess.TimeoutExpired as e:
-        proc.kill()
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        if log_fd is not None:
-            log_fd.flush()
-            msg = b"[Timed out]\n"
-            log_fd.write(msg)
-            sys.stdout.buffer.write(msg)
+        if not attach:
+            # Drain off the critical path, so that the timeout below actually
+            # applies while the child is still producing output.
+            reader = threading.Thread(target=_drain,
+                                      args=(proc.stdout, log_fd), daemon=True)
+            reader.start()
 
-    if log_fd is not None:
-        log_fd.close()
+        try:
+            proc.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_group(pgid, leader=proc)
+    finally:
+        # Runs on the normal path too:  the shell can exit successfully while
+        # leaving background children alive in the group.
+        _kill_group(pgid, leader=proc)
+
+        if reader is not None:
+            # The pipe only reaches EOF once every writer in the group is gone,
+            # which the kill above guarantees.
+            reader.join(timeout=5)
+
+        if attach:
+            _reclaim_tty()
+
+        if log_fd is not None:
+            if timed_out:
+                msg = b"[Timed out]\n"
+                log_fd.write(msg)
+                sys.stdout.buffer.write(msg)
+            log_fd.flush()
+            log_fd.close()
+
+        RUNNING_PGID = None
 
     if check and proc.returncode != 0:
         do_exit(f"Command exited with {proc.returncode}:  {proc.stdout}")
@@ -326,6 +433,8 @@ class RepoRunner():
         return self.results_path / name
 
     def do_run(self, repo: Repo):
+        global INTERRUPTED
+
         def _msg(s):
             print(c.OKCYAN + "[repo_run, {}] {}".format(repo.name(),
                                                         s) + c.ENDC)
@@ -356,9 +465,21 @@ class RepoRunner():
                                     cwd=str(work_dir), attach=True)
                 _msg("Step {} exited with return value {}".format(step.name, proc.returncode))
 
+            # Ctrl-C goes to the child's process group, not to us, so we learn
+            # about it from the exit status.  Bash reports -SIGINT for simple
+            # commands, "a; b" sequences and pipelines alike.
+            if proc.returncode == -signal.SIGINT:
+                INTERRUPTED = True
+                _msg("Interrupted by user, skipping remaining steps")
+                break
+
             if step.results.type != ResultType.NONE:
                 runner_results_file = step.results.path
                 result_type = step.results.type
+
+        if INTERRUPTED:
+            # No results to collect;  main() decides whether to go on.
+            return ResultType.NONE, final_results_file
 
         if result_type != ResultType.NONE:
             if runner_results_file is None:
@@ -377,6 +498,7 @@ class RepoRunner():
 def main(input_args):
     global RUNNING_PGID
     global ABORT
+    global INTERRUPTED
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str)
@@ -428,13 +550,34 @@ def main(input_args):
     all_repos = repo_list.get_repos()
     summary = GSSummary(run_id)
 
-    for repo in all_repos:
+    for i, repo in enumerate(all_repos):
         if needs_run or needs_build:
             signal.signal(signal.SIGINT, _sigint_handler)
+            try:
+                result_type, results_file = runner.do_run(repo)
+            finally:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-            result_type, results_file = runner.do_run(repo)
+            if INTERRUPTED:
+                INTERRUPTED = False
+                if not sys.stdin.isatty():
+                    # Unattended run:  an interrupt means stop, not skip.
+                    ABORT = True
+                elif i < len(all_repos) - 1:
+                    # We hold the terminal again (see _reclaim_tty), so a
+                    # Ctrl-D here is a real EOF on this read.
+                    try:
+                        ans = input("  [Enter] next student   "
+                                    "[q or Ctrl-D] abort run: ")
+                        if ans.strip().lower() == "q":
+                            ABORT = True
+                    except EOFError:
+                        print()
+                        ABORT = True
 
-            signal.signal(signal.SIGINT, signal.SIG_DFL)
+                if ABORT:
+                    break
+                continue
 
             if ABORT:
                 break
@@ -463,6 +606,13 @@ def main(input_args):
                 name = fp.stem
                 summary.add(name, results)
 
+        if not summary.result_map:
+            # Nothing to report -- e.g. the run was aborted before any repo
+            # produced results.  do_summary() divides by the submission count.
+            print("No results collected, not generating summary")
+            needs_summary = False
+
+    if needs_summary:
         output_file = config.summary_path / "summary_{}.html".format(run_id)
         summary.do_summary(str(output_file))
         print("Summary written to {}".format(str(output_file)))
